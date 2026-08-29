@@ -11,27 +11,29 @@ const app = express();
    CONFIG
 ========================================================= */
 
-const PORT = process.env.PORT || 3000;
+const PORT =
+    process.env.PORT || 3000;
 
 const GEMINI_API_KEY =
     process.env.GEMINI_API_KEY;
 
-/*
-   IMPORTANT:
-   Current stable Gemini models.
-*/
 const PRIMARY_MODEL =
     "gemini-3.6-flash";
 
 const FALLBACK_MODEL =
     "gemini-3.5-flash-lite";
 
+const MAX_BODY_SIZE =
+    "18mb";
+
+const MAX_MEDIA_BASE64_LENGTH =
+    14 * 1024 * 1024;
+
 /* =========================================================
    ENVIRONMENT CHECK
 ========================================================= */
 
 if (!GEMINI_API_KEY) {
-
     console.error("");
     console.error(
         "========================================"
@@ -42,29 +44,22 @@ if (!GEMINI_API_KEY) {
     console.error(
         "========================================"
     );
-
     console.error(
         "GEMINI_API_KEY is missing."
     );
-
     console.error(
         "Add GEMINI_API_KEY to Vercel:"
     );
-
     console.error(
         "Project Settings → Environment Variables"
     );
-
     console.error(
         "Environment: Production"
     );
-
     console.error(
         "========================================"
     );
-
     console.error("");
-
     process.exit(1);
 }
 
@@ -99,7 +94,8 @@ app.use(
 
 app.use(
     express.json({
-        limit: "10mb"
+        limit:
+            MAX_BODY_SIZE
     })
 );
 
@@ -115,7 +111,8 @@ You are a professional general-purpose AI assistant.
 Founder:
 Usman Choudhary
 
-Your purpose is to answer users clearly, naturally and professionally.
+PURPOSE:
+Provide clear, natural, accurate and useful answers.
 
 SUPPORTED TASKS:
 - General questions
@@ -131,21 +128,28 @@ SUPPORTED TASKS:
 - Writing
 - Translation
 - Productivity
-- Everyday questions
+- Engineering
+- Image understanding
+- PDF/document understanding
+- Audio understanding
 
-IMPORTANT RESPONSE STYLE:
+MEDIA RULES:
+- If an image is attached, actually inspect the image and answer using what is visible in it.
+- If a PDF or supported document is attached, inspect its contents before answering.
+- If audio is attached, use the audio content when answering.
+- Never claim that you viewed, read, heard or analyzed a file if no media was actually supplied.
+- If media is unclear or unreadable, say so.
+- Never invent values, measurements, text, test results, component specifications, prices, sources or observations that are not present.
+- When the user asks about engineering or safety-critical matters, clearly distinguish observed information from recommendations and advise professional verification where appropriate.
 
+RESPONSE STYLE:
 1. Answer like a normal modern AI chat assistant.
 2. Use clear readable text.
 3. Do NOT return JSON to the user.
-4. Do NOT put the whole answer inside quotation marks.
-5. Do NOT use markdown heading symbols such as:
-   #
-   ##
-   ###
-6. Do NOT use markdown bold syntax such as:
-   **
-7. Do NOT use markdown italic syntax unnecessarily.
+4. Do NOT put the entire answer inside quotation marks.
+5. Do NOT use Markdown heading symbols such as #, ##, ###.
+6. Do NOT use Markdown bold syntax such as **text**.
+7. Do NOT use Markdown italic syntax unnecessarily.
 8. Do NOT use code fences around normal answers.
 9. Do NOT use raw LaTeX.
 10. Do NOT use:
@@ -157,65 +161,262 @@ IMPORTANT RESPONSE STYLE:
    $
 11. Do NOT output escaped JSON.
 12. Do NOT use unnecessary hashtags.
-13. Do NOT use markdown horizontal rules.
+13. Do NOT use Markdown horizontal rules.
 14. Use normal line breaks.
-15. Use simple bullet points only when they improve readability.
+15. Use simple bullets only when useful.
 16. Keep simple questions concise.
 17. Give more detail when the question requires it.
 
 MATHEMATICS:
-
-Calculate carefully.
-
-Always verify arithmetic.
-
-For simple calculations, answer clearly.
-
-Example:
-
-Question:
-25 × 48
-
-Answer:
-25 × 48 = 1200.
-
-For formulas, use readable plain text.
-
-Example:
-
-Simple Interest = (Principal × Rate × Time) / 100
-
-Do not use LaTeX.
+- Calculate carefully.
+- Verify arithmetic before answering.
+- Show useful steps when appropriate.
+- Give the final answer clearly.
+- Use readable plain-text formulas rather than LaTeX.
 
 IDENTITY:
-
 Your name is MechSyntra AI.
-
 Your founder is Usman Choudhary.
 
 CODING:
-
 Provide practical and correct code.
 
 BUSINESS:
-
-Give realistic and structured advice.
-
+Give realistic, structured advice.
 Do not invent facts.
 
 IMPORTANT:
-
-Never claim that you performed an action that you did not actually perform.
-
-Answer naturally and professionally.
+Never claim you performed an action you did not actually perform.
 `;
+
+/* =========================================================
+   MIME HELPERS
+========================================================= */
+
+function normalizeMimeType(value) {
+    if (
+        typeof value !== "string"
+    ) {
+        return "";
+    }
+
+    return value
+        .split(";")[0]
+        .trim()
+        .toLowerCase();
+}
+
+function isSupportedMediaMime(mimeType) {
+    if (!mimeType) {
+        return false;
+    }
+
+    if (
+        mimeType.startsWith(
+            "image/"
+        )
+    ) {
+        return true;
+    }
+
+    if (
+        mimeType.startsWith(
+            "audio/"
+        )
+    ) {
+        return true;
+    }
+
+    if (
+        mimeType ===
+            "application/pdf"
+    ) {
+        return true;
+    }
+
+    return [
+        "text/plain",
+        "text/csv",
+        "text/html",
+        "text/css",
+        "text/markdown",
+        "text/xml",
+        "application/json",
+        "application/rtf"
+    ].includes(
+        mimeType
+    );
+}
+
+function stripDataUrlPrefix(base64) {
+    if (
+        typeof base64 !==
+        "string"
+    ) {
+        return "";
+    }
+
+    const commaIndex =
+        base64.indexOf(",");
+
+    if (
+        base64.startsWith(
+            "data:"
+        ) &&
+        commaIndex >= 0
+    ) {
+        return base64
+            .slice(
+                commaIndex + 1
+            )
+            .trim();
+    }
+
+    return base64.trim();
+}
+
+function looksLikeBase64(value) {
+    if (
+        typeof value !==
+        "string"
+    ) {
+        return false;
+    }
+
+    const clean =
+        stripDataUrlPrefix(
+            value
+        );
+
+    if (
+        clean.length === 0 ||
+        clean.length >
+            MAX_MEDIA_BASE64_LENGTH
+    ) {
+        return false;
+    }
+
+    return /^[A-Za-z0-9+/=\s]+$/.test(
+        clean
+    );
+}
+
+function createInlineDataPart(
+    mimeType,
+    base64Data
+) {
+    return {
+        inlineData: {
+            mimeType:
+                mimeType,
+            data:
+                stripDataUrlPrefix(
+                    base64Data
+                )
+        }
+    };
+}
+
+/* =========================================================
+   INPUT NORMALIZATION
+========================================================= */
+
+function buildUserParts(body) {
+    const parts = [];
+
+    const message =
+        typeof body?.message === "string"
+            ? body.message.trim()
+            : "";
+
+    const mediaBase64 =
+        typeof body?.mediaBase64 === "string"
+            ? body.mediaBase64
+            : typeof body?.imageBase64 === "string"
+                ? body.imageBase64
+                : typeof body?.fileBase64 === "string"
+                    ? body.fileBase64
+                    : "";
+
+    const mimeType =
+        normalizeMimeType(
+            body?.mimeType ||
+            body?.mediaMimeType ||
+            ""
+        );
+
+    const fileName =
+        typeof body?.fileName === "string"
+            ? body.fileName.trim()
+            : "";
+
+    if (message) {
+        parts.push({
+            text:
+                message
+        });
+    }
+
+    if (mediaBase64) {
+        if (
+            !mimeType
+        ) {
+            throw new Error(
+                "MIME type is required when a file or image is attached."
+            );
+        }
+
+        if (
+            !isSupportedMediaMime(
+                mimeType
+            )
+        ) {
+            throw new Error(
+                `Unsupported media type: ${mimeType}`
+            );
+        }
+
+        if (
+            !looksLikeBase64(
+                mediaBase64
+            )
+        ) {
+            throw new Error(
+                "Invalid or oversized base64 media data."
+            );
+        }
+
+        if (fileName) {
+            parts.push({
+                text:
+                    `Attached file name: ${fileName}`
+            });
+        }
+
+        parts.push(
+            createInlineDataPart(
+                mimeType,
+                mediaBase64
+            )
+        );
+    }
+
+    if (
+        parts.length === 0
+    ) {
+        throw new Error(
+            "Message or media is required."
+        );
+    }
+
+    return parts;
+}
 
 /* =========================================================
    STATUS HELPER
 ========================================================= */
 
 function getErrorStatus(error) {
-
     const possibleStatus =
         error?.status ??
         error?.code ??
@@ -227,24 +428,20 @@ function getErrorStatus(error) {
             possibleStatus
         );
 
-    if (
-        Number.isFinite(
-            numericStatus
-        )
-    ) {
-
-        return numericStatus;
-    }
-
-    return 500;
+    return Number.isFinite(
+        numericStatus
+    )
+        ? numericStatus
+        : 500;
 }
 
 /* =========================================================
-   ERROR MESSAGE
+   FRIENDLY ERROR
 ========================================================= */
 
-function getFriendlyError(error) {
-
+function getFriendlyError(
+    error
+) {
     const status =
         getErrorStatus(
             error
@@ -266,50 +463,41 @@ function getFriendlyError(error) {
         rawMessage
     );
 
-    if (
-        status === 400
-    ) {
-
+    if (status === 400) {
         return (
             "Gemini rejected the request. " +
-            "Please check the request format and model configuration."
+            "Please check the text, file type or media format."
         );
     }
 
-    if (
-        status === 401
-    ) {
-
+    if (status === 401) {
         return (
             "Gemini API authentication failed. " +
             "Check GEMINI_API_KEY in Vercel Production."
         );
     }
 
-    if (
-        status === 403
-    ) {
-
+    if (status === 403) {
         return (
             "Gemini API access was denied. " +
             "Check your Google AI API key and project permissions."
         );
     }
 
-    if (
-        status === 404
-    ) {
-
+    if (status === 404) {
         return (
-            "The selected Gemini model is unavailable for this project. " +
-            "Please check the configured model."
+            "The configured Gemini model is unavailable for this project."
         );
     }
 
-    if (
-        status === 429
-    ) {
+    if (status === 413) {
+        return (
+            "The attached file is too large. " +
+            "Please use a smaller file."
+        );
+    }
 
+    if (status === 429) {
         return (
             "Gemini usage limit was reached. " +
             "Please try again shortly."
@@ -322,7 +510,6 @@ function getFriendlyError(error) {
         status === 503 ||
         status === 504
     ) {
-
         return (
             "Gemini is temporarily unavailable. " +
             "Please try again in a moment."
@@ -335,23 +522,19 @@ function getFriendlyError(error) {
 }
 
 /* =========================================================
-   CLEAN RESPONSE
+   RESPONSE CLEANING
 ========================================================= */
 
 function cleanResponse(text) {
-
     if (
         typeof text !==
         "string"
     ) {
-
         return "";
     }
 
     let result =
         text.trim();
-
-    /* Remove code fences */
 
     result =
         result.replace(
@@ -365,15 +548,11 @@ function cleanResponse(text) {
             ""
         );
 
-    /* Remove heading markers */
-
     result =
         result.replace(
             /^#{1,6}\s*/gm,
             ""
         );
-
-    /* Remove bold */
 
     result =
         result.replace(
@@ -381,23 +560,17 @@ function cleanResponse(text) {
             "$1"
         );
 
-    /* Remove underline markdown */
-
     result =
         result.replace(
             /__(.*?)__/gs,
             "$1"
         );
 
-    /* Remove italic markdown */
-
     result =
         result.replace(
             /\*(.*?)\*/gs,
             "$1"
         );
-
-    /* Remove inline backticks */
 
     result =
         result.replace(
@@ -411,15 +584,11 @@ function cleanResponse(text) {
             ""
         );
 
-    /* Remove horizontal rules */
-
     result =
         result.replace(
             /^\s*[-*_]{3,}\s*$/gm,
             ""
         );
-
-    /* Math commands */
 
     result =
         result.replace(
@@ -457,23 +626,17 @@ function cleanResponse(text) {
             "°"
         );
 
-    /* LaTeX text */
-
     result =
         result.replace(
             /\\text\s*\{([^{}]*)\}/g,
             "$1"
         );
 
-    /* Simple frac */
-
     result =
         result.replace(
             /\\frac\s*\{([^{}]+)\}\s*\{([^{}]+)\}/g,
             "($1) / ($2)"
         );
-
-    /* Remove math dollar signs */
 
     result =
         result.replace(
@@ -487,8 +650,6 @@ function cleanResponse(text) {
             ""
         );
 
-    /* Remove left/right */
-
     result =
         result.replace(
             /\\left/g,
@@ -501,15 +662,11 @@ function cleanResponse(text) {
             ""
         );
 
-    /* Remove excessive blank lines */
-
     result =
         result.replace(
             /\n{3,}/g,
             "\n\n"
         );
-
-    /* Remove excessive spaces */
 
     result =
         result.replace(
@@ -526,19 +683,14 @@ function cleanResponse(text) {
 
 async function generateWithModel(
     model,
-    message
+    contents
 ) {
-
     return await ai.models.generateContent({
-
         model:
             model,
-
         contents:
-            message,
-
+            contents,
         config: {
-
             systemInstruction:
                 SYSTEM_INSTRUCTION
         }
@@ -546,408 +698,419 @@ async function generateWithModel(
 }
 
 /* =========================================================
-   HOME
+   HOME / HEALTH
 ========================================================= */
 
 app.get(
     "/",
     (req, res) => {
-
-        return res.status(
-            200
-        ).json({
-
-            success:
-                true,
-
+        return res.status(200).json({
+            success: true,
             service:
                 "MechSyntra AI",
-
             status:
                 "online",
-
             model:
-                PRIMARY_MODEL
+                PRIMARY_MODEL,
+            multimodal:
+                true
         });
     }
 );
-
-/* =========================================================
-   HEALTH
-========================================================= */
 
 app.get(
     "/health",
     (req, res) => {
-
-        return res.status(
-            200
-        ).json({
-
-            success:
-                true,
-
+        return res.status(200).json({
+            success: true,
             status:
                 "healthy",
-
             model:
-                PRIMARY_MODEL
+                PRIMARY_MODEL,
+            multimodal:
+                true
         });
     }
 );
 
 /* =========================================================
-   CHAT
+   CHAT / MULTIMODAL CHAT
 ========================================================= */
 
 app.post(
     "/chat",
     async (req, res) => {
 
-        const incomingMessage =
-            req.body?.message;
-
-        /* -----------------------------------------
-           VALIDATE INPUT
-        ----------------------------------------- */
-
-        if (
-            typeof incomingMessage !==
-            "string"
-        ) {
-
-            return res.status(
-                400
-            ).json({
-
-                success:
-                    false,
-
-                error:
-                    "Message is required."
-            });
-        }
-
-        const message =
-            incomingMessage.trim();
-
-        if (
-            message.length ===
-            0
-        ) {
-
-            return res.status(
-                400
-            ).json({
-
-                success:
-                    false,
-
-                error:
-                    "Message is required."
-            });
-        }
-
-        if (
-            message.length >
-            20000
-        ) {
-
-            return res.status(
-                413
-            ).json({
-
-                success:
-                    false,
-
-                error:
-                    "Message is too long."
-            });
-        }
-
-        console.log("");
-        console.log(
-            "========================================"
-        );
-
-        console.log(
-            "MECHSYNTRA AI REQUEST"
-        );
-
-        console.log(
-            "Message:",
-            message
-        );
-
-        console.log(
-            "Primary model:",
-            PRIMARY_MODEL
-        );
-
-        let response =
-            null;
-
-        let lastError =
-            null;
-
-        /* =========================================
-           PRIMARY MODEL RETRIES
-        ========================================= */
-
-        for (
-            let attempt = 1;
-            attempt <= 2;
-            attempt++
-        ) {
-
-            try {
-
-                console.log(
-                    `Primary attempt ${attempt}/2`
-                );
-
-                response =
-                    await generateWithModel(
-                        PRIMARY_MODEL,
-                        message
-                    );
-
-                if (
-                    response
-                ) {
-
-                    break;
-                }
-
-            } catch (
-                error
-            ) {
-
-                lastError =
-                    error;
-
-                const status =
-                    getErrorStatus(
-                        error
-                    );
-
-                console.error(
-                    "Primary error status:",
-                    status
-                );
-
-                console.error(
-                    "Primary error:",
-                    error?.message
-                );
-
-                /*
-                   Retry only temporary failures.
-                */
-
-                const retryable =
-                    status === 429 ||
-                    status === 500 ||
-                    status === 502 ||
-                    status === 503 ||
-                    status === 504;
-
-                if (
-                    !retryable ||
-                    attempt >= 2
-                ) {
-
-                    break;
-                }
-
-                await new Promise(
-                    resolve =>
-                        setTimeout(
-                            resolve,
-                            1200 * attempt
-                        )
-                );
-            }
-        }
-
-        /* =========================================
-           FALLBACK MODEL
-        ========================================= */
-
-        if (
-            !response
-        ) {
-
-            try {
-
-                console.log(
-                    "Trying fallback model:",
-                    FALLBACK_MODEL
-                );
-
-                response =
-                    await generateWithModel(
-                        FALLBACK_MODEL,
-                        message
-                    );
-
-            } catch (
-                error
-            ) {
-
-                lastError =
-                    error;
-
-                console.error(
-                    "Fallback error status:",
-                    getErrorStatus(
-                        error
-                    )
-                );
-
-                console.error(
-                    "Fallback error:",
-                    error?.message
-                );
-            }
-        }
-
-        /* =========================================
-           BOTH FAILED
-        ========================================= */
-
-        if (
-            !response
-        ) {
-
-            const status =
-                getErrorStatus(
-                    lastError
-                );
-
-            const friendlyMessage =
-                getFriendlyError(
-                    lastError
-                );
-
-            console.error(
-                "ALL GEMINI REQUESTS FAILED"
-            );
-
-            console.error(
-                "Final status:",
-                status
-            );
-
-            return res.status(
-                502
-            ).json({
-
-                success:
-                    false,
-
-                error:
-                    friendlyMessage,
-
-                status:
-                    status
-            });
-        }
-
-        /* =========================================
-           EXTRACT RESPONSE TEXT
-        ========================================= */
-
-        let answer =
-            "";
-
         try {
 
-            if (
-                typeof response.text ===
+            const message =
+                typeof req.body?.message ===
                 "string"
+                    ? req.body.message.trim()
+                    : "";
+
+            if (
+                message.length >
+                20000
+            ) {
+                return res.status(413).json({
+                    success: false,
+                    error:
+                        "Message is too long."
+                });
+            }
+
+            const mediaBase64 =
+                typeof req.body?.mediaBase64 ===
+                "string"
+                    ? req.body.mediaBase64
+                    : "";
+
+            if (
+                mediaBase64 &&
+                mediaBase64.length >
+                    MAX_MEDIA_BASE64_LENGTH
+            ) {
+                return res.status(413).json({
+                    success: false,
+                    error:
+                        "Attached media is too large."
+                });
+            }
+
+            let contents;
+
+            try {
+
+                const parts =
+                    buildUserParts(
+                        req.body
+                    );
+
+                contents = [
+                    {
+                        role:
+                            "user",
+                        parts:
+                            parts
+                    }
+                ];
+
+            } catch (
+                inputError
             ) {
 
-                answer =
-                    response.text.trim();
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        inputError.message
+                });
             }
+
+            const hasMedia =
+                contents[0]
+                    .parts
+                    .some(
+                        part =>
+                            !!part.inlineData
+                    );
+
+            console.log("");
+            console.log(
+                "========================================"
+            );
+
+            console.log(
+                "MECHSYNTRA AI REQUEST"
+            );
+
+            console.log(
+                "Message:",
+                message || "(media only)"
+            );
+
+            console.log(
+                "Media:",
+                hasMedia
+                    ? (
+                        req.body?.fileName ||
+                        req.body?.mimeType ||
+                        "attached"
+                    )
+                    : "none"
+            );
+
+            console.log(
+                "Primary model:",
+                PRIMARY_MODEL
+            );
+
+            let response =
+                null;
+
+            let lastError =
+                null;
+
+            /* -----------------------------------------
+               PRIMARY MODEL
+            ----------------------------------------- */
+
+            for (
+                let attempt = 1;
+                attempt <= 2;
+                attempt++
+            ) {
+
+                try {
+
+                    console.log(
+                        `Primary attempt ${attempt}/2`
+                    );
+
+                    response =
+                        await generateWithModel(
+                            PRIMARY_MODEL,
+                            contents
+                        );
+
+                    if (
+                        response
+                    ) {
+                        break;
+                    }
+
+                } catch (
+                    error
+                ) {
+
+                    lastError =
+                        error;
+
+                    const status =
+                        getErrorStatus(
+                            error
+                        );
+
+                    console.error(
+                        "Primary error status:",
+                        status
+                    );
+
+                    console.error(
+                        "Primary error:",
+                        error?.message
+                    );
+
+                    const retryable =
+                        status === 429 ||
+                        status === 500 ||
+                        status === 502 ||
+                        status === 503 ||
+                        status === 504;
+
+                    if (
+                        !retryable ||
+                        attempt >= 2
+                    ) {
+                        break;
+                    }
+
+                    await new Promise(
+                        resolve =>
+                            setTimeout(
+                                resolve,
+                                1200 *
+                                    attempt
+                            )
+                    );
+                }
+            }
+
+            /* -----------------------------------------
+               FALLBACK
+            ----------------------------------------- */
+
+            if (
+                !response
+            ) {
+
+                try {
+
+                    console.log(
+                        "Trying fallback model:",
+                        FALLBACK_MODEL
+                    );
+
+                    response =
+                        await generateWithModel(
+                            FALLBACK_MODEL,
+                            contents
+                        );
+
+                } catch (
+                    error
+                ) {
+
+                    lastError =
+                        error;
+
+                    console.error(
+                        "Fallback error status:",
+                        getErrorStatus(
+                            error
+                        )
+                    );
+
+                    console.error(
+                        "Fallback error:",
+                        error?.message
+                    );
+                }
+            }
+
+            /* -----------------------------------------
+               FAILED
+            ----------------------------------------- */
+
+            if (
+                !response
+            ) {
+
+                return res.status(502).json({
+
+                    success:
+                        false,
+
+                    error:
+                        getFriendlyError(
+                            lastError
+                        ),
+
+                    status:
+                        getErrorStatus(
+                            lastError
+                        )
+                });
+            }
+
+            /* -----------------------------------------
+               EXTRACT TEXT
+            ----------------------------------------- */
+
+            let answer =
+                "";
+
+            try {
+
+                if (
+                    typeof response.text ===
+                    "string"
+                ) {
+
+                    answer =
+                        response.text.trim();
+                }
+
+            } catch (
+                extractionError
+            ) {
+
+                console.error(
+                    "Response extraction error:",
+                    extractionError?.message
+                );
+            }
+
+            if (
+                !answer
+            ) {
+
+                return res.status(502).json({
+
+                    success:
+                        false,
+
+                    error:
+                        "Gemini returned an empty response."
+                });
+            }
+
+            /* -----------------------------------------
+               CLEAN
+            ----------------------------------------- */
+
+            answer =
+                cleanResponse(
+                    answer
+                );
+
+            if (
+                !answer
+            ) {
+
+                return res.status(502).json({
+
+                    success:
+                        false,
+
+                    error:
+                        "The AI returned an empty readable response."
+                });
+            }
+
+            console.log(
+                "Gemini response received successfully."
+            );
+
+            console.log(
+                "========================================"
+            );
+
+            return res.status(200).json({
+
+                success:
+                    true,
+
+                reply:
+                    answer
+            });
 
         } catch (
             error
         ) {
 
             console.error(
-                "Response extraction error:",
-                error?.message
+                "Unhandled /chat error:",
+                error
             );
-        }
 
-        /* =========================================
-           EMPTY RESPONSE
-        ========================================= */
-
-        if (
-            !answer
-        ) {
-
-            return res.status(
-                502
-            ).json({
+            return res.status(500).json({
 
                 success:
                     false,
 
                 error:
-                    "Gemini returned an empty response."
+                    "MechSyntra AI server could not process the request."
             });
         }
+    }
+);
 
-        /* =========================================
-           CLEAN RESPONSE
-        ========================================= */
+/* =========================================================
+   METHOD NOT ALLOWED
+========================================================= */
 
-        answer =
-            cleanResponse(
-                answer
-            );
+app.use(
+    "/chat",
+    (req, res) => {
 
-        if (
-            !answer
-        ) {
-
-            return res.status(
-                502
-            ).json({
-
-                success:
-                    false,
-
-                error:
-                    "The AI returned an empty readable response."
-            });
-        }
-
-        console.log(
-            "Gemini response received successfully."
-        );
-
-        console.log(
-            "========================================"
-        );
-
-        /* =========================================
-           SUCCESS
-        ========================================= */
-
-        return res.status(
-            200
-        ).json({
+        return res.status(405).json({
 
             success:
-                true,
+                false,
 
-            reply:
-                answer
+            error:
+                "Use POST /chat for AI messages."
         });
     }
 );
@@ -959,9 +1122,7 @@ app.post(
 app.use(
     (req, res) => {
 
-        return res.status(
-            404
-        ).json({
+        return res.status(404).json({
 
             success:
                 false,
@@ -1010,9 +1171,7 @@ app.use(
             );
         }
 
-        return res.status(
-            500
-        ).json({
+        return res.status(500).json({
 
             success:
                 false,
@@ -1033,6 +1192,7 @@ app.listen(
     () => {
 
         console.log("");
+
         console.log(
             "========================================"
         );
@@ -1063,6 +1223,10 @@ app.listen(
 
         console.log(
             `Backup : ${FALLBACK_MODEL}`
+        );
+
+        console.log(
+            "Media  : IMAGE / AUDIO / PDF / TEXT"
         );
 
         console.log(
