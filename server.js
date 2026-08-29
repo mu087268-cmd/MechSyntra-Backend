@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
+const sharp = require("sharp");
 const { GoogleGenAI } = require("@google/genai");
 
 dotenv.config();
@@ -8,11 +9,15 @@ dotenv.config();
 const app = express();
 
 /* =========================================================
-   MECHSYNTRA AI - FINAL SERVER
+   MECHSYNTRA AI
+   TEXT  -> GEMINI
+   IMAGE -> CLOUDFLARE WORKERS AI
 ========================================================= */
 
 const PORT =
     Number(process.env.PORT || 3000);
+
+/* ---------------- GEMINI ---------------- */
 
 const GEMINI_API_KEY =
     process.env.GEMINI_API_KEY;
@@ -25,13 +30,19 @@ const TEXT_FALLBACK_MODEL =
     process.env.GEMINI_TEXT_FALLBACK_MODEL ||
     "gemini-3.6-flash";
 
-const IMAGE_MODEL =
-    process.env.GEMINI_IMAGE_MODEL ||
-    "gemini-3.1-flash-image";
+/* ---------------- CLOUDFLARE ---------------- */
 
-const IMAGE_FALLBACK_MODEL =
-    process.env.GEMINI_IMAGE_FALLBACK_MODEL ||
-    "gemini-3.1-flash-lite-image";
+const CLOUDFLARE_API_TOKEN =
+    process.env.CLOUDFLARE_API_TOKEN;
+
+const CLOUDFLARE_ACCOUNT_ID =
+    process.env.CLOUDFLARE_ACCOUNT_ID;
+
+const CLOUDFLARE_IMAGE_MODEL =
+    process.env.CLOUDFLARE_IMAGE_MODEL ||
+    "@cf/black-forest-labs/flux-2-klein-4b";
+
+/* ---------------- LIMITS ---------------- */
 
 const JSON_LIMIT =
     process.env.JSON_LIMIT ||
@@ -60,12 +71,6 @@ const ai =
                 GEMINI_API_KEY
         })
         : null;
-
-if (!GEMINI_API_KEY) {
-    console.error(
-        "[MechSyntra] GEMINI_API_KEY is missing."
-    );
-}
 
 /* =========================================================
    EXPRESS
@@ -109,73 +114,62 @@ Usman Choudhary
 
 You are a professional AI assistant.
 
-You understand:
-- English
-- Urdu
-- Roman Urdu
-- Mixed Pakistani language
+LANGUAGE:
+Understand English, Urdu, Roman Urdu and mixed Pakistani language.
 
-Reply naturally in the user's language.
+STRICT LANGUAGE RULE:
+- If the user explicitly requests a language, answer only in that language.
+- If the user says Roman Urdu, answer in Roman Urdu.
+- If the user says Urdu, answer in Urdu script.
+- If the user asks for another language, answer in that language.
+- Otherwise match the language of the user's latest message.
 
-General:
+GENERAL:
 - Be accurate.
 - Be professional.
 - Do not invent facts.
-- Do not claim to have performed an action that you did not perform.
-- Never pretend an attachment exists when it is missing.
-- Keep simple questions concise.
-- Give detail when the task requires it.
+- Do not claim an action was performed if it was not.
+- Do not pretend an attachment exists if it is missing.
+- Keep simple answers concise.
 
-Engineering and mathematics:
+MATHEMATICS:
 - Calculate carefully.
 - Verify arithmetic.
 - Preserve units.
-- Use proper symbols such as ×, ÷, ≈, π, θ, τ, σ.
-- For numerical solutions use:
+- Use readable symbols such as ×, ÷, ≈, π, θ, τ and σ.
+- For numerical questions use:
   Given
   Formula
   Substitution
   Calculation
   Final Answer
-- Do not output raw LaTeX syntax.
+- Do not output raw LaTeX.
 
-Media:
-- Inspect the supplied attachment.
-- Analyze the actual image/document/audio supplied.
-- Never claim to have seen missing media.
+MEDIA:
+- Inspect supplied media.
+- Analyze actual content.
+- Never pretend to have seen missing media.
 
-Image editing:
-- Actually edit the supplied image when an edit is requested.
-- Preserve the original person's identity and face unless explicitly requested.
-- Do not unnecessarily alter facial proportions, expression, skin tone or recognizable features.
-- Change only what the user asks.
-- Preserve natural perspective, composition and lighting.
-- Match added objects to scale, shadows, perspective and lighting.
-- For enhancement, improve clarity, sharpness, lighting and detail without changing identity.
-- Return an actual edited image.
-
-Project Manager:
-- Work only with the supplied project information.
-- If only project title and deadline are known, do not invent requirements.
+PROJECT MANAGER:
+- Only use confirmed project data.
+- If only title and deadline are known, do not invent requirements.
 - Ask 2 or 3 intelligent questions based on the project title.
-- After the user answers, build requirements, components, tasks, risks, dependencies and next actions.
-- Keep Project Manager answers scoped to that project.
+- After answers, help build requirements, components, tasks, risks, dependencies and next actions.
 `;
 
 /* =========================================================
-   HELPERS
+   STATUS HELPERS
 ========================================================= */
 
 function getStatus(error) {
 
-    const raw =
-        error?.status ??
-        error?.code ??
-        error?.response?.status ??
-        500;
-
     const value =
-        Number(raw);
+        Number(
+            error?.status ??
+            error?.code ??
+            error?.response?.status ??
+            500
+        );
 
     return Number.isFinite(
         value
@@ -201,7 +195,7 @@ function is429(
     return status === 429;
 }
 
-function isTemporaryServerError(
+function isTemporary(
     status
 ) {
     return (
@@ -212,6 +206,10 @@ function isTemporaryServerError(
         status === 504
     );
 }
+
+/* =========================================================
+   RESPONSE CLEANER
+========================================================= */
 
 function cleanResponse(
     text
@@ -309,6 +307,10 @@ function cleanResponse(
         .trim();
 }
 
+/* =========================================================
+   MEDIA HELPERS
+========================================================= */
+
 function normalizeMime(
     value
 ) {
@@ -337,12 +339,9 @@ function stripDataPrefix(
         value.indexOf(",");
 
     if (
-        value.startsWith(
-            "data:"
-        ) &&
+        value.startsWith("data:") &&
         comma >= 0
     ) {
-
         return value
             .slice(
                 comma + 1
@@ -374,7 +373,7 @@ function decodeBase64(
         )
     ) {
         throw new Error(
-            "Invalid media data."
+            "Invalid Base64 media data."
         );
     }
 
@@ -402,11 +401,11 @@ function decodeBase64(
     }
 
     return {
+        bytes,
         base64:
             bytes.toString(
                 "base64"
-            ),
-        bytes
+            )
     };
 }
 
@@ -463,7 +462,11 @@ function readMedia(
     };
 }
 
-function buildContents(
+/* =========================================================
+   GEMINI TEXT
+========================================================= */
+
+function buildTextContents(
     message,
     media
 ) {
@@ -517,111 +520,11 @@ function buildContents(
     ];
 }
 
-/* =========================================================
-   FRIENDLY ERRORS
-========================================================= */
-
-function friendlyError(
-    error
-) {
-
-    const status =
-        getStatus(
-            error
-        );
-
-    console.error(
-        "[MechSyntra]",
-        {
-            status,
-            message:
-                error?.message ||
-                String(error)
-        }
-    );
-
-    if (
-        status === 400
-    ) {
-
-        return (
-            "MechSyntra could not accept this request. Please check the message or attachment."
-        );
-    }
-
-    if (
-        status === 401 ||
-        status === 403
-    ) {
-
-        return (
-            "Gemini authentication or project access failed. Check the Gemini API key and project permissions."
-        );
-    }
-
-    if (
-        status === 404
-    ) {
-
-        return (
-            "The configured Gemini model is unavailable."
-        );
-    }
-
-    if (
-        status === 408
-    ) {
-
-        return (
-            "MechSyntra timed out while waiting for the AI."
-        );
-    }
-
-    if (
-        status === 413
-    ) {
-
-        return (
-            "The attachment is too large."
-        );
-    }
-
-    if (
-        status === 429
-    ) {
-
-        return (
-            "Gemini quota or rate limit was reached. Please try again shortly."
-        );
-    }
-
-    if (
-        status >= 500
-    ) {
-
-        return (
-            "MechSyntra could not reach the AI service right now."
-        );
-    }
-
-    return (
-        error?.message ||
-        "MechSyntra AI could not process the request."
-    );
-}
-
-/* =========================================================
-   TEXT GENERATION
-   IMPORTANT:
-   429 is NOT repeatedly retried.
-========================================================= */
-
 async function generateText(
     contents
 ) {
 
     if (!ai) {
-
         throw new Error(
             "GEMINI_API_KEY is missing."
         );
@@ -632,9 +535,9 @@ async function generateText(
             TEXT_MODEL,
             TEXT_FALLBACK_MODEL
         ].filter(
-            (value, index, array) =>
+            (value, index, list) =>
                 value &&
-                array.indexOf(
+                list.indexOf(
                     value
                 ) === index
         );
@@ -700,31 +603,25 @@ async function generateText(
                 );
 
             console.error(
-                `[MechSyntra] text model ${model} failed with ${status}`
+                `[MechSyntra] text ${model} -> ${status}`
             );
 
-            /*
-               If primary model hits 429, try the one fallback model once.
-               Never keep retrying the same quota-limited model.
-            */
             if (
-                is429(
-                    status
-                )
+                is429(status)
             ) {
                 continue;
             }
 
             if (
+                isTemporary(status) &&
                 i <
-                    models.length - 1 &&
-                isTemporaryServerError(
-                    status
-                )
+                    models.length - 1
             ) {
+
                 await sleep(
                     500
                 );
+
                 continue;
             }
 
@@ -741,288 +638,362 @@ async function generateText(
 }
 
 /* =========================================================
-   IMAGE GENERATION / EDITING
+   CLOUDFLARE IMAGE
 ========================================================= */
 
-function extractImage(
-    interaction
-) {
-
-    let image =
-        null;
-
-    let reply =
-        "";
+function cloudflareImageUrl() {
 
     if (
-        interaction?.output_image?.data
+        !CLOUDFLARE_API_TOKEN ||
+        !CLOUDFLARE_ACCOUNT_ID
     ) {
 
-        image = {
-            data:
-                interaction.output_image.data,
-            mimeType:
-                interaction.output_image.mimeType ||
-                "image/png"
-        };
-    }
-
-    const steps =
-        Array.isArray(
-            interaction?.steps
-        )
-            ? interaction.steps
-            : [];
-
-    for (
-        const step of
-            steps
-    ) {
-
-        if (
-            step?.type !==
-            "model_output"
-        ) {
-            continue;
-        }
-
-        const content =
-            Array.isArray(
-                step?.content
-            )
-                ? step.content
-                : [];
-
-        for (
-            const block of
-                content
-        ) {
-
-            if (
-                block?.type ===
-                    "image" &&
-                block?.data &&
-                !image
-            ) {
-
-                image = {
-                    data:
-                        block.data,
-                    mimeType:
-                        block.mime_type ||
-                        "image/png"
-                };
-            }
-
-            if (
-                block?.type ===
-                "text"
-            ) {
-
-                reply +=
-                    String(
-                        block.text ||
-                        ""
-                    );
-            }
-        }
-    }
-
-    return {
-        image,
-        reply:
-            cleanResponse(
-                reply
-            )
-    };
-}
-
-async function imageOperation(
-    prompt,
-    media
-) {
-
-    if (!ai) {
-
-        throw new Error(
-            "GEMINI_API_KEY is missing."
-        );
-    }
-
-    const models =
-        [
-            IMAGE_MODEL,
-            IMAGE_FALLBACK_MODEL
-        ].filter(
-            (value, index, array) =>
-                value &&
-                array.indexOf(
-                    value
-                ) === index
-        );
-
-    let lastError =
-        null;
-
-    const input =
-        media
-            ? [
-                {
-                    type:
-                        "image",
-                    mime_type:
-                        media.mimeType,
-                    data:
-                        media.base64
-                },
-                {
-                    type:
-                        "text",
-                    text:
-                        `
-Edit the supplied image according to this instruction:
-
-${prompt || "Enhance this image professionally."}
-
-Rules:
-- Preserve the original person's identity and face.
-- Do not change facial proportions unnecessarily.
-- Preserve natural skin tone and recognizable features.
-- Change only the requested content.
-- Preserve original composition and perspective.
-- Make inserted objects look physically natural.
-- Match lighting, shadows, scale and perspective.
-- For enhancement, improve clarity, sharpness, lighting and detail without changing identity.
-- Return the actual edited image.
-                        `.trim()
-                }
-            ]
-            : prompt;
-
-    for (
-        const model of
-            models
-    ) {
-
-        try {
-
-            const request =
-                ai.interactions.create({
-                    model,
-                    input,
-                    response_format: {
-                        type:
-                            "image",
-                        image_size:
-                            "2K"
-                    }
-                });
-
-            const interaction =
-                await Promise.race([
-                    request,
-                    new Promise(
-                        (_, reject) =>
-                            setTimeout(
-                                () =>
-                                    reject(
-                                        Object.assign(
-                                            new Error(
-                                                "Image request timed out."
-                                            ),
-                                            {
-                                                status:
-                                                    408
-                                            }
-                                        )
-                                    ),
-                                IMAGE_TIMEOUT_MS
-                            )
-                    )
-                ]);
-
-            const result =
-                extractImage(
-                    interaction
-                );
-
-            if (
-                !result.image
-            ) {
-
-                throw new Error(
-                    "Image model returned no image."
-                );
-            }
-
-            return {
-                imageBase64:
-                    result.image.data,
-                imageMimeType:
-                    result.image.mimeType ||
-                    "image/png",
-                reply:
-                    result.reply ||
-                    "Image generated successfully by MechSyntra AI."
-            };
-
-        } catch (
-            error
-        ) {
-
-            lastError =
-                error;
-
-            const status =
-                getStatus(
-                    error
-                );
-
-            console.error(
-                `[MechSyntra] image model ${model} failed with ${status}`
+        const error =
+            new Error(
+                "Cloudflare image environment variables are missing."
             );
 
-            /*
-               A 429 moves directly to the one fallback model.
-               No endless retry loop.
-            */
-            if (
-                is429(
-                    status
-                )
-            ) {
-                continue;
-            }
+        error.status =
+            500;
 
-            if (
-                isTemporaryServerError(
-                    status
-                ) &&
-                model !==
-                    models[
-                        models.length - 1
-                    ]
-            ) {
-                await sleep(
-                    700
-                );
-                continue;
-            }
-
-            break;
-        }
+        throw error;
     }
 
-    throw (
-        lastError ||
-        new Error(
-            "All image models failed."
+    return (
+        "https://api.cloudflare.com/client/v4/accounts/" +
+        encodeURIComponent(
+            CLOUDFLARE_ACCOUNT_ID
+        ) +
+        "/ai/run/" +
+        encodeURIComponent(
+            CLOUDFLARE_IMAGE_MODEL
         )
     );
 }
 
+/*
+   Cloudflare FLUX.2 Klein reference images must be
+   smaller than 512x512. Resize them before sending.
+*/
+async function prepareCloudflareImage(
+    media
+) {
+
+    if (!media) {
+        return null;
+    }
+
+    if (
+        !media.mimeType.startsWith(
+            "image/"
+        )
+    ) {
+        throw new Error(
+            "The supplied media is not an image."
+        );
+    }
+
+    const resized =
+        await sharp(
+            media.bytes
+        )
+            .resize(
+                512,
+                512,
+                {
+                    fit:
+                        "inside",
+                    withoutEnlargement:
+                        true
+                }
+            )
+            .jpeg({
+                quality:
+                    88
+            })
+            .toBuffer();
+
+    return {
+        bytes:
+            resized,
+        mimeType:
+            "image/jpeg",
+        fileName:
+            "mechsyntra-reference.jpg"
+    };
+}
+
+async function parseCloudflareResponse(
+    response
+) {
+
+    const contentType =
+        normalizeMime(
+            response.headers.get(
+                "content-type"
+            ) ||
+            ""
+        );
+
+    if (
+        contentType.startsWith(
+            "image/"
+        )
+    ) {
+
+        const arrayBuffer =
+            await response.arrayBuffer();
+
+        return {
+            imageBase64:
+                Buffer
+                    .from(
+                        arrayBuffer
+                    )
+                    .toString(
+                        "base64"
+                    ),
+            imageMimeType:
+                contentType
+        };
+    }
+
+    const payload =
+        await response.json();
+
+    if (
+        payload?.success === false ||
+        (
+            Array.isArray(
+                payload?.errors
+            ) &&
+            payload.errors.length
+        )
+    ) {
+
+        const message =
+            payload
+                ?.errors
+                ?.map(
+                    item =>
+                        item?.message
+                )
+                .filter(
+                    Boolean
+                )
+                .join(
+                    " | "
+                ) ||
+            "Cloudflare Workers AI returned an error.";
+
+        const error =
+            new Error(
+                message
+            );
+
+        error.status =
+            response.status;
+
+        throw error;
+    }
+
+    const result =
+        payload?.result ??
+        payload;
+
+    /*
+       Current FLUX.2 Klein REST output is a Base64
+       encoded generated image in result.image.
+    */
+    let image =
+        result?.image ??
+        result?.output_image ??
+        result?.data ??
+        null;
+
+    if (
+        image &&
+        typeof image ===
+            "object"
+    ) {
+        image =
+            image.data ??
+            image.image ??
+            null;
+    }
+
+    if (
+        typeof image ===
+        "string"
+    ) {
+
+        image =
+            stripDataPrefix(
+                image
+            );
+
+        if (
+            image
+        ) {
+            return {
+                imageBase64:
+                    image,
+                imageMimeType:
+                    "image/png"
+            };
+        }
+    }
+
+    throw new Error(
+        "Cloudflare returned no generated image."
+    );
+}
+
+async function cloudflareImageOperation(
+    prompt,
+    media
+) {
+
+    const url =
+        cloudflareImageUrl();
+
+    const form =
+        new FormData();
+
+    form.append(
+        "prompt",
+        String(
+            prompt ||
+            (
+                media
+                    ? "Edit this image professionally."
+                    : "Generate a professional image."
+            )
+        )
+    );
+
+    form.append(
+        "width",
+        "1024"
+    );
+
+    form.append(
+        "height",
+        "1024"
+    );
+
+    if (
+        media
+    ) {
+
+        const prepared =
+            await prepareCloudflareImage(
+                media
+            );
+
+        form.append(
+            "input_image_0",
+            new Blob(
+                [
+                    prepared.bytes
+                ],
+                {
+                    type:
+                        prepared.mimeType
+                }
+            ),
+            prepared.fileName
+        );
+    }
+
+    const controller =
+        new AbortController();
+
+    const timeout =
+        setTimeout(
+            () =>
+                controller.abort(),
+            IMAGE_TIMEOUT_MS
+        );
+
+    try {
+
+        const response =
+            await fetch(
+                url,
+                {
+                    method:
+                        "POST",
+                    headers: {
+                        Authorization:
+                            `Bearer ${CLOUDFLARE_API_TOKEN}`
+                    },
+                    body:
+                        form,
+                    signal:
+                        controller.signal
+                }
+            );
+
+        if (
+            !response.ok
+        ) {
+
+            let message =
+                "";
+
+            try {
+
+                const body =
+                    await response.json();
+
+                message =
+                    body?.errors
+                        ?.map(
+                            item =>
+                                item?.message
+                        )
+                        .filter(
+                            Boolean
+                        )
+                        .join(
+                            " | "
+                        ) ||
+                    body?.message ||
+                    "";
+
+            } catch {
+
+                message =
+                    await response.text();
+            }
+
+            const error =
+                new Error(
+                    message ||
+                    `Cloudflare image request failed (${response.status}).`
+                );
+
+            error.status =
+                response.status;
+
+            throw error;
+        }
+
+        return await parseCloudflareResponse(
+            response
+        );
+
+    } finally {
+
+        clearTimeout(
+            timeout
+        );
+    }
+}
+
 /* =========================================================
-   TEXT FILE EDITING
+   FILE EDITING
 ========================================================= */
 
 const EDITABLE_TEXT_TYPES =
@@ -1050,24 +1021,24 @@ async function editTextFile(
         );
 
     const prompt = `
-You are the MechSyntra AI file editor.
+Edit this file professionally.
 
-File name:
+File:
 ${media.fileName}
 
-MIME type:
+Type:
 ${media.mimeType}
 
-User instruction:
+Instruction:
 ${instruction}
 
 Rules:
-- Return the complete revised file.
+- Return the COMPLETE revised file.
 - Preserve valid syntax.
-- Preserve the original structure unless the instruction requires a change.
+- Preserve structure unless instructed otherwise.
 - Do not invent missing information.
-- Do not add explanations.
-- Do not use Markdown code fences.
+- No explanations.
+- No Markdown fences.
 
 ORIGINAL FILE:
 ${original}
@@ -1096,7 +1067,7 @@ ${original}
     if (!result) {
 
         throw new Error(
-            "Gemini returned an empty edited file."
+            "The edited file is empty."
         );
     }
 
@@ -1104,14 +1075,90 @@ ${original}
 }
 
 /* =========================================================
-   HOME / HEALTH
+   FRIENDLY ERROR
+========================================================= */
+
+function friendlyError(
+    error
+) {
+
+    const status =
+        getStatus(
+            error
+        );
+
+    if (
+        status === 400
+    ) {
+        return (
+            "MechSyntra could not accept this request. Please check the message or image."
+        );
+    }
+
+    if (
+        status === 401 ||
+        status === 403
+    ) {
+        return (
+            "AI service authentication failed. Check the API credentials."
+        );
+    }
+
+    if (
+        status === 404
+    ) {
+        return (
+            "The configured AI model or endpoint is unavailable."
+        );
+    }
+
+    if (
+        status === 408
+    ) {
+        return (
+            "The AI request timed out."
+        );
+    }
+
+    if (
+        status === 413
+    ) {
+        return (
+            "The attached media is too large."
+        );
+    }
+
+    if (
+        status === 429
+    ) {
+        return (
+            "The AI service is temporarily rate-limited. Please try again shortly."
+        );
+    }
+
+    if (
+        status >= 500
+    ) {
+        return (
+            "The AI service is temporarily unavailable."
+        );
+    }
+
+    return (
+        error?.message ||
+        "MechSyntra AI could not process the request."
+    );
+}
+
+/* =========================================================
+   HEALTH
 ========================================================= */
 
 app.get(
     "/",
     (req, res) => {
 
-        res.status(
+        return res.status(
             200
         ).json({
             success:
@@ -1122,14 +1169,10 @@ app.get(
                 "online",
             textModel:
                 TEXT_MODEL,
-            textFallback:
-                TEXT_FALLBACK_MODEL,
             imageModel:
-                IMAGE_MODEL,
-            imageFallback:
-                IMAGE_FALLBACK_MODEL,
-            multimodal:
-                true,
+                CLOUDFLARE_IMAGE_MODEL,
+            imageProvider:
+                "Cloudflare Workers AI",
             imageGeneration:
                 true,
             imageEditing:
@@ -1144,7 +1187,7 @@ app.get(
     "/health",
     (req, res) => {
 
-        res.status(
+        return res.status(
             200
         ).json({
             success:
@@ -1156,7 +1199,12 @@ app.get(
             textModel:
                 TEXT_MODEL,
             imageModel:
-                IMAGE_MODEL,
+                CLOUDFLARE_IMAGE_MODEL,
+            cloudflareConfigured:
+                Boolean(
+                    CLOUDFLARE_API_TOKEN &&
+                    CLOUDFLARE_ACCOUNT_ID
+                ),
             timestamp:
                 new Date().toISOString()
         });
@@ -1169,10 +1217,12 @@ app.get(
 
         const ready =
             Boolean(
-                GEMINI_API_KEY
+                GEMINI_API_KEY &&
+                CLOUDFLARE_API_TOKEN &&
+                CLOUDFLARE_ACCOUNT_ID
             );
 
-        res.status(
+        return res.status(
             ready
                 ? 200
                 : 503
@@ -1187,7 +1237,7 @@ app.get(
 );
 
 /* =========================================================
-   MAIN CHAT ENDPOINT
+   /chat
 ========================================================= */
 
 app.post(
@@ -1233,7 +1283,7 @@ app.post(
                     req.body
                 );
 
-            /* IMAGE GENERATION */
+            /* ---------------- IMAGE GENERATION ---------------- */
 
             if (
                 action ===
@@ -1242,7 +1292,9 @@ app.post(
                     "image_generate"
             ) {
 
-                if (!message) {
+                if (
+                    !message
+                ) {
 
                     return res.status(
                         400
@@ -1250,12 +1302,12 @@ app.post(
                         success:
                             false,
                         error:
-                            "Describe the image you want MechSyntra AI to generate."
+                            "Describe the image you want to generate."
                     });
                 }
 
                 const result =
-                    await imageOperation(
+                    await cloudflareImageOperation(
                         message,
                         null
                     );
@@ -1268,7 +1320,7 @@ app.post(
                     type:
                         "image_generation",
                     reply:
-                        result.reply,
+                        "Image generated successfully by MechSyntra AI.",
                     imageBase64:
                         result.imageBase64,
                     imageMimeType:
@@ -1279,7 +1331,7 @@ app.post(
                 });
             }
 
-            /* IMAGE EDITING */
+            /* ---------------- IMAGE EDIT ---------------- */
 
             if (
                 action ===
@@ -1301,12 +1353,12 @@ app.post(
                         success:
                             false,
                         error:
-                            "Please attach an image for image editing."
+                            "Please attach an image for editing."
                     });
                 }
 
                 const result =
-                    await imageOperation(
+                    await cloudflareImageOperation(
                         message,
                         media
                     );
@@ -1319,7 +1371,7 @@ app.post(
                     type:
                         "image_edit",
                     reply:
-                        result.reply,
+                        "Image edited successfully by MechSyntra AI.",
                     imageBase64:
                         result.imageBase64,
                     imageMimeType:
@@ -1330,7 +1382,7 @@ app.post(
                 });
             }
 
-            /* FILE EDITING */
+            /* ---------------- FILE EDIT ---------------- */
 
             if (
                 action ===
@@ -1347,7 +1399,7 @@ app.post(
                         success:
                             false,
                         error:
-                            "Please attach a file to edit."
+                            "Please attach a file."
                     });
                 }
 
@@ -1363,11 +1415,11 @@ app.post(
                         success:
                             false,
                         error:
-                            "This editor rewrites text-based files only."
+                            "Only text-based files can be rewritten."
                     });
                 }
 
-                const content =
+                const fileContent =
                     await editTextFile(
                         media,
                         message
@@ -1384,8 +1436,7 @@ app.post(
                         media.fileName,
                     mimeType:
                         media.mimeType,
-                    fileContent:
-                        content,
+                    fileContent,
                     reply:
                         "File edited successfully.",
                     latencyMs:
@@ -1394,10 +1445,10 @@ app.post(
                 });
             }
 
-            /* NORMAL CHAT + MEDIA ANALYSIS */
+            /* ---------------- NORMAL CHAT ---------------- */
 
             const contents =
-                buildContents(
+                buildTextContents(
                     message,
                     media
                 );
@@ -1450,7 +1501,7 @@ app.post(
                 );
 
             console.error(
-                "[MechSyntra] /chat:",
+                "[MechSyntra] /chat",
                 error
             );
 
@@ -1476,7 +1527,7 @@ app.post(
 );
 
 /* =========================================================
-   DIRECT IMAGE ENDPOINT
+   /edit-image
 ========================================================= */
 
 app.post(
@@ -1520,7 +1571,7 @@ app.post(
             }
 
             const result =
-                await imageOperation(
+                await cloudflareImageOperation(
                     prompt,
                     media
                 );
@@ -1533,7 +1584,7 @@ app.post(
                 type:
                     "image_edit",
                 reply:
-                    result.reply,
+                    "Image edited successfully by MechSyntra AI.",
                 imageBase64:
                     result.imageBase64,
                 imageMimeType:
@@ -1574,7 +1625,7 @@ app.post(
 );
 
 /* =========================================================
-   DIRECT FILE ENDPOINT
+   /edit-file
 ========================================================= */
 
 app.post(
@@ -1597,7 +1648,9 @@ app.post(
                         ? req.body.message.trim()
                         : "";
 
-            if (!media) {
+            if (
+                !media
+            ) {
 
                 return res.status(
                     400
@@ -1625,7 +1678,7 @@ app.post(
                 });
             }
 
-            const content =
+            const fileContent =
                 await editTextFile(
                     media,
                     prompt
@@ -1642,8 +1695,7 @@ app.post(
                     media.fileName,
                 mimeType:
                     media.mimeType,
-                fileContent:
-                    content,
+                fileContent,
                 reply:
                     "File edited successfully."
             });
@@ -1713,7 +1765,6 @@ app.use(
         if (
             res.headersSent
         ) {
-
             return next(
                 error
             );
@@ -1784,7 +1835,11 @@ if (
             );
 
             console.log(
-                `Image Model: ${IMAGE_MODEL}`
+                `Image Provider: Cloudflare Workers AI`
+            );
+
+            console.log(
+                `Image Model: ${CLOUDFLARE_IMAGE_MODEL}`
             );
 
             console.log(
