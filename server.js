@@ -8,46 +8,46 @@ dotenv.config();
 const app = express();
 
 /* =========================================================
-   MECHSYNTRA AI — PRODUCTION SERVER
-   Text chat + multimodal analysis + image editing + file editing
+   MECHSYNTRA AI - FINAL SERVER
 ========================================================= */
 
 const PORT =
-    process.env.PORT || 3000;
+    Number(process.env.PORT || 3000);
 
 const GEMINI_API_KEY =
     process.env.GEMINI_API_KEY;
 
-/*
- * Configurable from Vercel Environment Variables:
- *
- * GEMINI_TEXT_MODEL
- * GEMINI_IMAGE_MODEL
- */
-
 const TEXT_MODEL =
     process.env.GEMINI_TEXT_MODEL ||
+    "gemini-3.5-flash-lite";
+
+const TEXT_FALLBACK_MODEL =
+    process.env.GEMINI_TEXT_FALLBACK_MODEL ||
     "gemini-3.6-flash";
 
 const IMAGE_MODEL =
     process.env.GEMINI_IMAGE_MODEL ||
     "gemini-3.1-flash-image";
 
+const IMAGE_FALLBACK_MODEL =
+    process.env.GEMINI_IMAGE_FALLBACK_MODEL ||
+    "gemini-3.1-flash-lite-image";
+
 const JSON_LIMIT =
     process.env.JSON_LIMIT ||
     "16mb";
 
 const MAX_MEDIA_BYTES =
-    6 * 1024 * 1024;
+    8 * 1024 * 1024;
 
 const MAX_MESSAGE_CHARS =
     20000;
 
-const MAX_RETRIES =
-    2;
+const TEXT_TIMEOUT_MS =
+    35000;
 
-const RETRY_DELAYS_MS =
-    [300, 900];
+const IMAGE_TIMEOUT_MS =
+    120000;
 
 /* =========================================================
    GEMINI CLIENT
@@ -68,7 +68,7 @@ if (!GEMINI_API_KEY) {
 }
 
 /* =========================================================
-   EXPRESS CONFIG
+   EXPRESS
 ========================================================= */
 
 app.disable(
@@ -107,106 +107,105 @@ You are MechSyntra AI.
 Founder:
 Usman Choudhary
 
-You are a professional general-purpose AI assistant.
+You are a professional AI assistant.
 
-SUPPORTED:
-- General questions
-- Mathematics
-- Numerical calculations
-- Engineering
-- Science
-- Technology
-- Android development
-- Programming
-- Coding
-- Business
-- Education
-- Writing
-- Translation
-- Project management
-- Image understanding
-- Image editing
-- File/document understanding
+You understand:
+- English
+- Urdu
+- Roman Urdu
+- Mixed Pakistani language
 
-GENERAL RESPONSE RULES:
-- Answer accurately and naturally.
-- Never invent facts.
-- Never claim an action was performed when it was not performed.
-- Use concise answers for simple questions.
-- Use clear step-by-step explanations for complex questions.
-- Use readable plain text.
-- Avoid unnecessary Markdown.
-- Do not use raw LaTeX when plain mathematical notation is sufficient.
+Reply naturally in the user's language.
 
-NUMERICAL / ENGINEERING:
-- Show:
+General:
+- Be accurate.
+- Be professional.
+- Do not invent facts.
+- Do not claim to have performed an action that you did not perform.
+- Never pretend an attachment exists when it is missing.
+- Keep simple questions concise.
+- Give detail when the task requires it.
+
+Engineering and mathematics:
+- Calculate carefully.
+- Verify arithmetic.
+- Preserve units.
+- Use proper symbols such as ×, ÷, ≈, π, θ, τ, σ.
+- For numerical solutions use:
   Given
   Formula
   Substitution
   Calculation
   Final Answer
-- Keep units together, for example:
-  9.81 m/s²
-  94.31 N/mm²
-- Use proper symbols such as:
-  × ÷ ≈ π θ v₀ τₘₐₓ σₘₐₓ
-- Check arithmetic carefully.
-- Do not mix variable names or invent values.
+- Do not output raw LaTeX syntax.
 
-MEDIA:
-- Inspect the actual attached media.
-- If an image is attached, analyze what is actually visible.
-- If a supported text document is attached, read its actual content.
-- Never claim to have inspected an attachment that was not successfully supplied.
+Media:
+- Inspect the supplied attachment.
+- Analyze the actual image/document/audio supplied.
+- Never claim to have seen missing media.
 
-IMAGE EDITING:
-- When the user asks to edit an attached image, actually edit it.
-- Preserve the person's identity and recognizable face unless explicitly asked to change it.
-- Do not unnecessarily change facial proportions, expression, skin tone or identity.
-- Change only the requested object/area.
-- Preserve the original composition and perspective unless the user requests otherwise.
-- Match lighting, shadows, reflections, color, scale and perspective.
-- For enhancement, improve quality without unnecessarily changing identity.
-- Do not add unrelated objects.
-- Make edits look natural and professional.
+Image editing:
+- Actually edit the supplied image when an edit is requested.
+- Preserve the original person's identity and face unless explicitly requested.
+- Do not unnecessarily alter facial proportions, expression, skin tone or recognizable features.
+- Change only what the user asks.
+- Preserve natural perspective, composition and lighting.
+- Match added objects to scale, shadows, perspective and lighting.
+- For enhancement, improve clarity, sharpness, lighting and detail without changing identity.
+- Return an actual edited image.
 
-FILE EDITING:
-- For text-based files, preserve syntax and structure unless the user requests structural changes.
-- Return the complete revised file.
-- Do not invent missing content.
+Project Manager:
+- Work only with the supplied project information.
+- If only project title and deadline are known, do not invent requirements.
+- Ask 2 or 3 intelligent questions based on the project title.
+- After the user answers, build requirements, components, tasks, risks, dependencies and next actions.
+- Keep Project Manager answers scoped to that project.
 `;
 
 /* =========================================================
-   ERROR / STATUS HELPERS
+   HELPERS
 ========================================================= */
 
-function getStatus(
-    error
-) {
-    const candidate =
+function getStatus(error) {
+
+    const raw =
         error?.status ??
         error?.code ??
         error?.response?.status ??
         500;
 
-    const numeric =
-        Number(
-            candidate
-        );
+    const value =
+        Number(raw);
 
     return Number.isFinite(
-        numeric
+        value
     )
-        ? numeric
+        ? value
         : 500;
 }
 
-function isRetryable(
+function sleep(ms) {
+
+    return new Promise(
+        resolve =>
+            setTimeout(
+                resolve,
+                ms
+            )
+    );
+}
+
+function is429(
+    status
+) {
+    return status === 429;
+}
+
+function isTemporaryServerError(
     status
 ) {
     return (
         status === 408 ||
-        status === 429 ||
         status === 500 ||
         status === 502 ||
         status === 503 ||
@@ -214,81 +213,10 @@ function isRetryable(
     );
 }
 
-function sleep(
-    milliseconds
-) {
-    return new Promise(
-        resolve =>
-            setTimeout(
-                resolve,
-                milliseconds
-            )
-    );
-}
-
-function friendlyError(
-    error
-) {
-    const status =
-        getStatus(
-            error
-        );
-
-    console.error(
-        "[MechSyntra] Gemini status:",
-        status
-    );
-
-    console.error(
-        "[MechSyntra] Gemini error:",
-        error?.message || error
-    );
-
-    switch (
-        status
-    ) {
-        case 400:
-            return "Gemini rejected the request. Please check the message or attachment.";
-
-        case 401:
-            return "Gemini API authentication failed. Check GEMINI_API_KEY.";
-
-        case 403:
-            return "Gemini API access was denied. Check API permissions, billing and quota.";
-
-        case 404:
-            return "The configured Gemini model is unavailable. Check the model name.";
-
-        case 408:
-            return "The AI request timed out. Please try again.";
-
-        case 413:
-            return "The attached file is too large. Please choose a smaller file.";
-
-        case 429:
-            return "Gemini quota or rate limit was reached. Please try again shortly.";
-
-        default:
-            if (
-                status >= 500
-            ) {
-                return "Gemini is temporarily unavailable. Please try again shortly.";
-            }
-
-            return (
-                error?.message ||
-                "MechSyntra AI could not process the request."
-            );
-    }
-}
-
-/* =========================================================
-   TEXT CLEANING
-========================================================= */
-
-function cleanText(
+function cleanResponse(
     text
 ) {
+
     if (
         typeof text !==
         "string"
@@ -319,6 +247,14 @@ function cleanText(
             "$1"
         )
         .replace(
+            /`([^`]+)`/g,
+            "$1"
+        )
+        .replace(
+            /`/g,
+            ""
+        )
+        .replace(
             /\\cdot/g,
             " × "
         )
@@ -339,6 +275,10 @@ function cleanText(
             " → "
         )
         .replace(
+            /\\circ/g,
+            "°"
+        )
+        .replace(
             /\\text\s*\{([^{}]*)\}/g,
             "$1"
         )
@@ -355,20 +295,26 @@ function cleanText(
             ""
         )
         .replace(
+            /\\left/g,
+            ""
+        )
+        .replace(
+            /\\right/g,
+            ""
+        )
+        .replace(
             /\n{3,}/g,
             "\n\n"
         )
         .trim();
 }
 
-/* =========================================================
-   MIME HELPERS
-========================================================= */
-
 function normalizeMime(
     value
 ) {
-    return typeof value === "string"
+
+    return typeof value ===
+        "string"
         ? value
             .split(";")[0]
             .trim()
@@ -379,6 +325,7 @@ function normalizeMime(
 function stripDataPrefix(
     value
 ) {
+
     if (
         typeof value !==
         "string"
@@ -386,16 +333,19 @@ function stripDataPrefix(
         return "";
     }
 
-    const commaIndex =
+    const comma =
         value.indexOf(",");
 
     if (
-        value.startsWith("data:") &&
-        commaIndex >= 0
+        value.startsWith(
+            "data:"
+        ) &&
+        comma >= 0
     ) {
+
         return value
             .slice(
-                commaIndex + 1
+                comma + 1
             )
             .trim();
     }
@@ -406,16 +356,25 @@ function stripDataPrefix(
 function decodeBase64(
     value
 ) {
+
     const clean =
         stripDataPrefix(
             value
         );
 
-    if (
-        !clean
-    ) {
+    if (!clean) {
         throw new Error(
             "Media data is empty."
+        );
+    }
+
+    if (
+        !/^[A-Za-z0-9+/=\s]+$/.test(
+            clean
+        )
+    ) {
+        throw new Error(
+            "Invalid media data."
         );
     }
 
@@ -438,7 +397,7 @@ function decodeBase64(
         MAX_MEDIA_BYTES
     ) {
         throw new Error(
-            "Attached media is larger than 6 MB."
+            "Attached media is too large."
         );
     }
 
@@ -451,9 +410,10 @@ function decodeBase64(
     };
 }
 
-function getMedia(
+function readMedia(
     body
 ) {
+
     const raw =
         typeof body?.mediaBase64 ===
             "string"
@@ -466,9 +426,7 @@ function getMedia(
                     ? body.fileBase64
                     : "";
 
-    if (
-        !raw
-    ) {
+    if (!raw) {
         return null;
     }
 
@@ -479,9 +437,7 @@ function getMedia(
             ""
         );
 
-    if (
-        !mimeType
-    ) {
+    if (!mimeType) {
         throw new Error(
             "MIME type is required."
         );
@@ -507,106 +463,229 @@ function getMedia(
     };
 }
 
-/* =========================================================
-   IMAGE EDIT INTENT
-========================================================= */
-
-function hasImageEditIntent(
-    text
+function buildContents(
+    message,
+    media
 ) {
-    const value =
-        String(
-            text || ""
-        )
-            .toLowerCase()
-            .trim();
+
+    const parts = [];
 
     if (
-        !value
+        message &&
+        message.trim()
     ) {
-        return false;
+
+        parts.push({
+            text:
+                message.trim()
+        });
     }
 
-    const keywords = [
-        "edit image",
-        "edit this image",
-        "edit the image",
-        "change image",
-        "change this image",
-        "modify image",
-        "modify this image",
-        "add to image",
-        "add this to image",
-        "remove from image",
-        "remove this from image",
-        "delete from image",
-        "replace in image",
-        "enhance image",
-        "enhance this image",
-        "improve image",
-        "improve this image",
-        "retouch image",
-        "retouch this image",
-        "background",
-        "add cap",
-        "add a cap",
-        "remove object",
-        "add object",
-        "put on the image",
-        "put this on the image",
-        "change the background",
-        "make this image",
-        "make the image"
-    ];
+    if (
+        media
+    ) {
 
-    return keywords.some(
-        keyword =>
-            value.includes(
-                keyword
-            )
+        parts.push({
+            inlineData: {
+                mimeType:
+                    media.mimeType,
+                data:
+                    media.base64
+            }
+        });
+
+        parts.push({
+            text:
+                `Attached file: ${media.fileName}`
+        });
+    }
+
+    if (
+        parts.length === 0
+    ) {
+        throw new Error(
+            "Message or media is required."
+        );
+    }
+
+    return [
+        {
+            role:
+                "user",
+            parts
+        }
+    ];
+}
+
+/* =========================================================
+   FRIENDLY ERRORS
+========================================================= */
+
+function friendlyError(
+    error
+) {
+
+    const status =
+        getStatus(
+            error
+        );
+
+    console.error(
+        "[MechSyntra]",
+        {
+            status,
+            message:
+                error?.message ||
+                String(error)
+        }
+    );
+
+    if (
+        status === 400
+    ) {
+
+        return (
+            "MechSyntra could not accept this request. Please check the message or attachment."
+        );
+    }
+
+    if (
+        status === 401 ||
+        status === 403
+    ) {
+
+        return (
+            "Gemini authentication or project access failed. Check the Gemini API key and project permissions."
+        );
+    }
+
+    if (
+        status === 404
+    ) {
+
+        return (
+            "The configured Gemini model is unavailable."
+        );
+    }
+
+    if (
+        status === 408
+    ) {
+
+        return (
+            "MechSyntra timed out while waiting for the AI."
+        );
+    }
+
+    if (
+        status === 413
+    ) {
+
+        return (
+            "The attachment is too large."
+        );
+    }
+
+    if (
+        status === 429
+    ) {
+
+        return (
+            "Gemini quota or rate limit was reached. Please try again shortly."
+        );
+    }
+
+    if (
+        status >= 500
+    ) {
+
+        return (
+            "MechSyntra could not reach the AI service right now."
+        );
+    }
+
+    return (
+        error?.message ||
+        "MechSyntra AI could not process the request."
     );
 }
 
 /* =========================================================
-   TEXT MODEL
+   TEXT GENERATION
+   IMPORTANT:
+   429 is NOT repeatedly retried.
 ========================================================= */
 
 async function generateText(
     contents
 ) {
-    if (
-        !ai
-    ) {
+
+    if (!ai) {
+
         throw new Error(
             "GEMINI_API_KEY is missing."
         );
     }
 
+    const models =
+        [
+            TEXT_MODEL,
+            TEXT_FALLBACK_MODEL
+        ].filter(
+            (value, index, array) =>
+                value &&
+                array.indexOf(
+                    value
+                ) === index
+        );
+
     let lastError =
         null;
 
     for (
-        let attempt = 0;
-        attempt <= MAX_RETRIES;
-        attempt++
+        let i = 0;
+        i < models.length;
+        i++
     ) {
+
+        const model =
+            models[i];
 
         try {
 
-            return await ai.models.generateContent({
-                model:
-                    TEXT_MODEL,
+            const request =
+                ai.models.generateContent({
+                    model,
+                    contents,
+                    config: {
+                        systemInstruction:
+                            SYSTEM_INSTRUCTION,
+                        maxOutputTokens:
+                            1400
+                    }
+                });
 
-                contents,
-
-                config: {
-                    systemInstruction:
-                        SYSTEM_INSTRUCTION,
-
-                    maxOutputTokens:
-                        1200
-                }
-            });
+            return await Promise.race([
+                request,
+                new Promise(
+                    (_, reject) =>
+                        setTimeout(
+                            () =>
+                                reject(
+                                    Object.assign(
+                                        new Error(
+                                            "Text request timed out."
+                                        ),
+                                        {
+                                            status:
+                                                408
+                                        }
+                                    )
+                                ),
+                            TEXT_TIMEOUT_MS
+                        )
+                )
+            ]);
 
         } catch (
             error
@@ -621,215 +700,270 @@ async function generateText(
                 );
 
             console.error(
-                `[MechSyntra] text attempt ${attempt + 1}/${MAX_RETRIES + 1}: ${status}`
+                `[MechSyntra] text model ${model} failed with ${status}`
             );
 
+            /*
+               If primary model hits 429, try the one fallback model once.
+               Never keep retrying the same quota-limited model.
+            */
             if (
-                !isRetryable(
+                is429(
                     status
-                ) ||
-                attempt >= MAX_RETRIES
+                )
             ) {
-                break;
+                continue;
             }
 
-            await sleep(
-                RETRY_DELAYS_MS[
-                    attempt
-                ]
-            );
+            if (
+                i <
+                    models.length - 1 &&
+                isTemporaryServerError(
+                    status
+                )
+            ) {
+                await sleep(
+                    500
+                );
+                continue;
+            }
+
+            throw error;
         }
     }
 
     throw (
         lastError ||
         new Error(
-            "Text model request failed."
+            "All text models failed."
         )
     );
 }
 
 /* =========================================================
-   IMAGE EDITING
+   IMAGE GENERATION / EDITING
 ========================================================= */
 
-async function editImage(
-    media,
-    instruction
+function extractImage(
+    interaction
 ) {
+
+    let image =
+        null;
+
+    let reply =
+        "";
+
     if (
-        !ai
+        interaction?.output_image?.data
     ) {
+
+        image = {
+            data:
+                interaction.output_image.data,
+            mimeType:
+                interaction.output_image.mimeType ||
+                "image/png"
+        };
+    }
+
+    const steps =
+        Array.isArray(
+            interaction?.steps
+        )
+            ? interaction.steps
+            : [];
+
+    for (
+        const step of
+            steps
+    ) {
+
+        if (
+            step?.type !==
+            "model_output"
+        ) {
+            continue;
+        }
+
+        const content =
+            Array.isArray(
+                step?.content
+            )
+                ? step.content
+                : [];
+
+        for (
+            const block of
+                content
+        ) {
+
+            if (
+                block?.type ===
+                    "image" &&
+                block?.data &&
+                !image
+            ) {
+
+                image = {
+                    data:
+                        block.data,
+                    mimeType:
+                        block.mime_type ||
+                        "image/png"
+                };
+            }
+
+            if (
+                block?.type ===
+                "text"
+            ) {
+
+                reply +=
+                    String(
+                        block.text ||
+                        ""
+                    );
+            }
+        }
+    }
+
+    return {
+        image,
+        reply:
+            cleanResponse(
+                reply
+            )
+    };
+}
+
+async function imageOperation(
+    prompt,
+    media
+) {
+
+    if (!ai) {
+
         throw new Error(
             "GEMINI_API_KEY is missing."
         );
     }
 
-    const input = [
-        {
-            type:
-                "image",
-
-            mime_type:
-                media.mimeType,
-
-            data:
-                media.base64
-        },
-        {
-            type:
-                "text",
-
-            text:
-                `
-Edit the supplied image according to this instruction:
-
-${instruction}
-
-STRICT EDITING REQUIREMENTS:
-- Preserve the original person's identity and face.
-- Do not alter facial proportions or recognizable features unless explicitly requested.
-- Preserve natural skin appearance.
-- Change only the requested object, area or property.
-- Preserve the original composition and perspective unless the user requests otherwise.
-- Match lighting, shadows, reflections, texture and scale.
-- Make inserted objects look naturally photographed.
-- For enhancement, improve quality, clarity, sharpness and lighting without changing identity.
-- Do not add unrelated objects.
-- Return the edited image.
-                `.trim()
-        }
-    ];
+    const models =
+        [
+            IMAGE_MODEL,
+            IMAGE_FALLBACK_MODEL
+        ].filter(
+            (value, index, array) =>
+                value &&
+                array.indexOf(
+                    value
+                ) === index
+        );
 
     let lastError =
         null;
 
+    const input =
+        media
+            ? [
+                {
+                    type:
+                        "image",
+                    mime_type:
+                        media.mimeType,
+                    data:
+                        media.base64
+                },
+                {
+                    type:
+                        "text",
+                    text:
+                        `
+Edit the supplied image according to this instruction:
+
+${prompt || "Enhance this image professionally."}
+
+Rules:
+- Preserve the original person's identity and face.
+- Do not change facial proportions unnecessarily.
+- Preserve natural skin tone and recognizable features.
+- Change only the requested content.
+- Preserve original composition and perspective.
+- Make inserted objects look physically natural.
+- Match lighting, shadows, scale and perspective.
+- For enhancement, improve clarity, sharpness, lighting and detail without changing identity.
+- Return the actual edited image.
+                        `.trim()
+                }
+            ]
+            : prompt;
+
     for (
-        let attempt = 0;
-        attempt <= MAX_RETRIES;
-        attempt++
+        const model of
+            models
     ) {
 
         try {
 
-            const interaction =
-                await ai.interactions.create({
-                    model:
-                        IMAGE_MODEL,
-
-                    input
+            const request =
+                ai.interactions.create({
+                    model,
+                    input,
+                    response_format: {
+                        type:
+                            "image",
+                        image_size:
+                            "2K"
+                    }
                 });
 
-            let imageBase64 =
-                "";
+            const interaction =
+                await Promise.race([
+                    request,
+                    new Promise(
+                        (_, reject) =>
+                            setTimeout(
+                                () =>
+                                    reject(
+                                        Object.assign(
+                                            new Error(
+                                                "Image request timed out."
+                                            ),
+                                            {
+                                                status:
+                                                    408
+                                            }
+                                        )
+                                    ),
+                                IMAGE_TIMEOUT_MS
+                            )
+                    )
+                ]);
 
-            let imageMimeType =
-                "image/png";
-
-            let textReply =
-                "";
-
-            if (
-                Array.isArray(
-                    interaction?.steps
-                )
-            ) {
-
-                for (
-                    const step of
-                        interaction.steps
-                ) {
-
-                    if (
-                        step?.type !==
-                        "model_output"
-                    ) {
-                        continue;
-                    }
-
-                    const blocks =
-                        Array.isArray(
-                            step?.content
-                        )
-                            ? step.content
-                            : [];
-
-                    for (
-                        const block of
-                            blocks
-                    ) {
-
-                        if (
-                            block?.type ===
-                            "image"
-                        ) {
-
-                            if (
-                                block.data &&
-                                !imageBase64
-                            ) {
-
-                                imageBase64 =
-                                    block.data;
-
-                                imageMimeType =
-                                    block.mime_type ||
-                                    block.mimeType ||
-                                    "image/png";
-                            }
-                        }
-
-                        if (
-                            block?.type ===
-                            "text"
-                        ) {
-
-                            textReply +=
-                                String(
-                                    block.text ||
-                                    ""
-                                );
-                        }
-                    }
-                }
-            }
-
-            /*
-               Compatibility path.
-            */
-            if (
-                !imageBase64 &&
-                interaction?.output_image?.data
-            ) {
-
-                imageBase64 =
-                    interaction.output_image.data;
-
-                imageMimeType =
-                    interaction.output_image.mimeType ||
-                    "image/png";
-            }
+            const result =
+                extractImage(
+                    interaction
+                );
 
             if (
-                !imageBase64
+                !result.image
             ) {
 
                 throw new Error(
-                    "Gemini image model returned no edited image."
+                    "Image model returned no image."
                 );
             }
 
             return {
-
-                imageBase64,
-
-                imageMimeType,
-
+                imageBase64:
+                    result.image.data,
+                imageMimeType:
+                    result.image.mimeType ||
+                    "image/png",
                 reply:
-                    cleanText(
-                        textReply
-                    ) ||
-                    "Image edited successfully by MechSyntra AI."
+                    result.reply ||
+                    "Image generated successfully by MechSyntra AI."
             };
 
         } catch (
@@ -845,34 +979,44 @@ STRICT EDITING REQUIREMENTS:
                 );
 
             console.error(
-                `[MechSyntra] image attempt ${attempt + 1}/${MAX_RETRIES + 1}: ${status}`
+                `[MechSyntra] image model ${model} failed with ${status}`
             );
 
-            console.error(
-                error?.message || ""
-            );
-
+            /*
+               A 429 moves directly to the one fallback model.
+               No endless retry loop.
+            */
             if (
-                !isRetryable(
+                is429(
                     status
-                ) ||
-                attempt >= MAX_RETRIES
+                )
             ) {
-                break;
+                continue;
             }
 
-            await sleep(
-                RETRY_DELAYS_MS[
-                    attempt
-                ]
-            );
+            if (
+                isTemporaryServerError(
+                    status
+                ) &&
+                model !==
+                    models[
+                        models.length - 1
+                    ]
+            ) {
+                await sleep(
+                    700
+                );
+                continue;
+            }
+
+            break;
         }
     }
 
     throw (
         lastError ||
         new Error(
-            "Image editing failed."
+            "All image models failed."
         )
     );
 }
@@ -881,28 +1025,32 @@ STRICT EDITING REQUIREMENTS:
    TEXT FILE EDITING
 ========================================================= */
 
-const EDITABLE_TEXT_MIMES = [
-    "text/plain",
-    "text/csv",
-    "text/html",
-    "text/css",
-    "text/markdown",
-    "text/xml",
-    "application/json",
-    "application/rtf"
-];
+const EDITABLE_TEXT_TYPES =
+    new Set([
+        "text/plain",
+        "text/csv",
+        "text/html",
+        "text/css",
+        "text/markdown",
+        "text/xml",
+        "application/json",
+        "application/rtf",
+        "application/javascript",
+        "text/javascript"
+    ]);
 
 async function editTextFile(
     media,
     instruction
 ) {
+
     const original =
         media.bytes.toString(
             "utf8"
         );
 
     const prompt = `
-You are MechSyntra AI file editor.
+You are the MechSyntra AI file editor.
 
 File name:
 ${media.fileName}
@@ -916,10 +1064,10 @@ ${instruction}
 Rules:
 - Return the complete revised file.
 - Preserve valid syntax.
-- Preserve the original structure unless instructed otherwise.
-- Do not invent missing content.
+- Preserve the original structure unless the instruction requires a change.
+- Do not invent missing information.
 - Do not add explanations.
-- Do not use Markdown fences.
+- Do not use Markdown code fences.
 
 ORIGINAL FILE:
 ${original}
@@ -930,7 +1078,6 @@ ${original}
             {
                 role:
                     "user",
-
                 parts: [
                     {
                         text:
@@ -940,104 +1087,81 @@ ${original}
             }
         ]);
 
-    const edited =
-        cleanText(
+    const result =
+        cleanResponse(
             response?.text ||
             ""
         );
 
-    if (
-        !edited
-    ) {
+    if (!result) {
+
         throw new Error(
             "Gemini returned an empty edited file."
         );
     }
 
-    return edited;
+    return result;
 }
 
 /* =========================================================
-   ROOT
+   HOME / HEALTH
 ========================================================= */
 
 app.get(
     "/",
     (req, res) => {
 
-        return res.status(
+        res.status(
             200
         ).json({
-
             success:
                 true,
-
             service:
                 "MechSyntra AI",
-
             status:
                 "online",
-
             textModel:
                 TEXT_MODEL,
-
+            textFallback:
+                TEXT_FALLBACK_MODEL,
             imageModel:
                 IMAGE_MODEL,
-
+            imageFallback:
+                IMAGE_FALLBACK_MODEL,
             multimodal:
                 true,
-
+            imageGeneration:
+                true,
             imageEditing:
                 true,
-
             fileEditing:
                 true
         });
     }
 );
 
-/* =========================================================
-   HEALTH
-========================================================= */
-
 app.get(
     "/health",
     (req, res) => {
 
-        return res.status(
+        res.status(
             200
         ).json({
-
             success:
                 true,
-
             status:
                 "healthy",
-
-            imageEditing:
-                true,
-
-            fileEditing:
-                true,
-
-            multimodal:
-                true,
-
+            service:
+                "MechSyntra AI",
             textModel:
                 TEXT_MODEL,
-
             imageModel:
                 IMAGE_MODEL,
-
             timestamp:
                 new Date().toISOString()
         });
     }
 );
-
-/* =========================================================
-   READY
-========================================================= */
 
 app.get(
     "/ready",
@@ -1048,17 +1172,14 @@ app.get(
                 GEMINI_API_KEY
             );
 
-        return res.status(
+        res.status(
             ready
                 ? 200
                 : 503
         ).json({
-
             success:
                 ready,
-
             ready,
-
             service:
                 "MechSyntra AI"
         });
@@ -1066,7 +1187,7 @@ app.get(
 );
 
 /* =========================================================
-   MAIN CHAT
+   MAIN CHAT ENDPOINT
 ========================================================= */
 
 app.post(
@@ -1100,82 +1221,116 @@ app.post(
                 return res.status(
                     413
                 ).json({
-
                     success:
                         false,
-
                     error:
                         "Message is too long."
                 });
             }
 
             const media =
-                getMedia(
+                readMedia(
                     req.body
                 );
 
-            /*
-               IMPORTANT:
-               If an image is attached and the user asks for an edit,
-               automatically use the image model even when Android
-               accidentally sends action="chat".
-            */
-
-            const shouldEditImage =
-                Boolean(
-                    media &&
-                    media.mimeType.startsWith(
-                        "image/"
-                    ) &&
-                    (
-                        action ===
-                            "edit_image" ||
-                        action ===
-                            "image_edit" ||
-                        hasImageEditIntent(
-                            message
-                        )
-                    )
-                );
+            /* IMAGE GENERATION */
 
             if (
-                shouldEditImage
+                action ===
+                    "generate_image" ||
+                action ===
+                    "image_generate"
             ) {
 
-                const edited =
-                    await editImage(
-                        media,
-                        message
+                if (!message) {
+
+                    return res.status(
+                        400
+                    ).json({
+                        success:
+                            false,
+                        error:
+                            "Describe the image you want MechSyntra AI to generate."
+                    });
+                }
+
+                const result =
+                    await imageOperation(
+                        message,
+                        null
                     );
 
                 return res.status(
                     200
                 ).json({
-
                     success:
                         true,
-
                     type:
-                        "image_edit",
-
+                        "image_generation",
                     reply:
-                        edited.reply,
-
+                        result.reply,
                     imageBase64:
-                        edited.imageBase64,
-
+                        result.imageBase64,
                     imageMimeType:
-                        edited.imageMimeType,
-
+                        result.imageMimeType,
                     latencyMs:
                         Date.now() -
                         started
                 });
             }
 
-            /*
-               TEXT FILE EDIT
-            */
+            /* IMAGE EDITING */
+
+            if (
+                action ===
+                    "edit_image" ||
+                action ===
+                    "image_edit"
+            ) {
+
+                if (
+                    !media ||
+                    !media.mimeType.startsWith(
+                        "image/"
+                    )
+                ) {
+
+                    return res.status(
+                        400
+                    ).json({
+                        success:
+                            false,
+                        error:
+                            "Please attach an image for image editing."
+                    });
+                }
+
+                const result =
+                    await imageOperation(
+                        message,
+                        media
+                    );
+
+                return res.status(
+                    200
+                ).json({
+                    success:
+                        true,
+                    type:
+                        "image_edit",
+                    reply:
+                        result.reply,
+                    imageBase64:
+                        result.imageBase64,
+                    imageMimeType:
+                        result.imageMimeType,
+                    latencyMs:
+                        Date.now() -
+                        started
+                });
+            }
+
+            /* FILE EDITING */
 
             if (
                 action ===
@@ -1189,17 +1344,15 @@ app.post(
                     return res.status(
                         400
                     ).json({
-
                         success:
                             false,
-
                         error:
                             "Please attach a file to edit."
                     });
                 }
 
                 if (
-                    !EDITABLE_TEXT_MIMES.includes(
+                    !EDITABLE_TEXT_TYPES.has(
                         media.mimeType
                     )
                 ) {
@@ -1207,16 +1360,14 @@ app.post(
                     return res.status(
                         400
                     ).json({
-
                         success:
                             false,
-
                         error:
-                            "This file type can be analyzed, but only supported text-based files can be rewritten."
+                            "This editor rewrites text-based files only."
                     });
                 }
 
-                const fileContent =
+                const content =
                     await editTextFile(
                         media,
                         message
@@ -1225,129 +1376,65 @@ app.post(
                 return res.status(
                     200
                 ).json({
-
                     success:
                         true,
-
                     type:
                         "file_edit",
-
-                    reply:
-                        "File edited successfully.",
-
-                    fileContent,
-
                     fileName:
                         media.fileName,
-
                     mimeType:
                         media.mimeType,
-
+                    fileContent:
+                        content,
+                    reply:
+                        "File edited successfully.",
                     latencyMs:
                         Date.now() -
                         started
                 });
             }
 
-            /*
-               NORMAL TEXT OR MULTIMODAL ANALYSIS
-            */
+            /* NORMAL CHAT + MEDIA ANALYSIS */
 
-            const parts = [];
-
-            if (
-                message
-            ) {
-
-                parts.push({
-                    text:
-                        message
-                });
-            }
-
-            if (
-                media
-            ) {
-
-                parts.push({
-                    inlineData: {
-                        mimeType:
-                            media.mimeType,
-
-                        data:
-                            media.base64
-                    }
-                });
-
-                parts.push({
-                    text:
-                        `Attached file: ${media.fileName}`
-                });
-            }
-
-            if (
-                parts.length ===
-                0
-            ) {
-
-                return res.status(
-                    400
-                ).json({
-
-                    success:
-                        false,
-
-                    error:
-                        "Message or attachment is required."
-                });
-            }
+            const contents =
+                buildContents(
+                    message,
+                    media
+                );
 
             const response =
-                await generateText([
-                    {
-                        role:
-                            "user",
-
-                        parts
-                    }
-                ]);
+                await generateText(
+                    contents
+                );
 
             const reply =
-                cleanText(
+                cleanResponse(
                     response?.text ||
                     ""
                 );
 
-            if (
-                !reply
-            ) {
+            if (!reply) {
 
                 return res.status(
                     502
                 ).json({
-
                     success:
                         false,
-
                     error:
-                        "Gemini returned an empty response."
+                        "MechSyntra AI returned an empty response."
                 });
             }
 
             return res.status(
                 200
             ).json({
-
                 success:
                     true,
-
                 type:
                     media
                         ? "multimodal_chat"
                         : "chat",
-
                 reply,
-
                 latencyMs:
                     Date.now() -
                     started
@@ -1363,29 +1450,23 @@ app.post(
                 );
 
             console.error(
-                "[MechSyntra] /chat error:",
-                status,
-                error?.message ||
-                    error
+                "[MechSyntra] /chat:",
+                error
             );
 
             return res.status(
                 status >= 400 &&
-                status < 600
+                        status < 600
                     ? status
                     : 500
             ).json({
-
                 success:
                     false,
-
                 error:
                     friendlyError(
                         error
                     ),
-
                 status,
-
                 latencyMs:
                     Date.now() -
                     started
@@ -1395,7 +1476,7 @@ app.post(
 );
 
 /* =========================================================
-   DIRECT IMAGE EDIT
+   DIRECT IMAGE ENDPOINT
 ========================================================= */
 
 app.post(
@@ -1408,7 +1489,7 @@ app.post(
         try {
 
             const media =
-                getMedia(
+                readMedia(
                     req.body
                 );
 
@@ -1431,56 +1512,32 @@ app.post(
                 return res.status(
                     400
                 ).json({
-
                     success:
                         false,
-
                     error:
                         "Please provide an image."
                 });
             }
 
-            if (
-                !prompt
-            ) {
-
-                return res.status(
-                    400
-                ).json({
-
-                    success:
-                        false,
-
-                    error:
-                        "Please describe what you want changed in the image."
-                });
-            }
-
-            const edited =
-                await editImage(
-                    media,
-                    prompt
+            const result =
+                await imageOperation(
+                    prompt,
+                    media
                 );
 
             return res.status(
                 200
             ).json({
-
                 success:
                     true,
-
                 type:
                     "image_edit",
-
                 reply:
-                    edited.reply,
-
+                    result.reply,
                 imageBase64:
-                    edited.imageBase64,
-
+                    result.imageBase64,
                 imageMimeType:
-                    edited.imageMimeType,
-
+                    result.imageMimeType,
                 latencyMs:
                     Date.now() -
                     started
@@ -1495,30 +1552,19 @@ app.post(
                     error
                 );
 
-            console.error(
-                "[MechSyntra] /edit-image error:",
-                status,
-                error?.message ||
-                    error
-            );
-
             return res.status(
                 status >= 400 &&
-                status < 600
+                        status < 600
                     ? status
                     : 500
             ).json({
-
                 success:
                     false,
-
                 error:
                     friendlyError(
                         error
                     ),
-
                 status,
-
                 latencyMs:
                     Date.now() -
                     started
@@ -1528,20 +1574,17 @@ app.post(
 );
 
 /* =========================================================
-   DIRECT FILE EDIT
+   DIRECT FILE ENDPOINT
 ========================================================= */
 
 app.post(
     "/edit-file",
     async (req, res) => {
 
-        const started =
-            Date.now();
-
         try {
 
             const media =
-                getMedia(
+                readMedia(
                     req.body
                 );
 
@@ -1554,24 +1597,20 @@ app.post(
                         ? req.body.message.trim()
                         : "";
 
-            if (
-                !media
-            ) {
+            if (!media) {
 
                 return res.status(
                     400
                 ).json({
-
                     success:
                         false,
-
                     error:
                         "Please provide a file."
                 });
             }
 
             if (
-                !EDITABLE_TEXT_MIMES.includes(
+                !EDITABLE_TEXT_TYPES.has(
                     media.mimeType
                 )
             ) {
@@ -1579,16 +1618,14 @@ app.post(
                 return res.status(
                     400
                 ).json({
-
                     success:
                         false,
-
                     error:
-                        "Only supported text-based files can be rewritten."
+                        "Only text-based files can be rewritten."
                 });
             }
 
-            const fileContent =
+            const content =
                 await editTextFile(
                     media,
                     prompt
@@ -1597,27 +1634,18 @@ app.post(
             return res.status(
                 200
             ).json({
-
                 success:
                     true,
-
                 type:
                     "file_edit",
-
-                reply:
-                    "File edited successfully.",
-
-                fileContent,
-
                 fileName:
                     media.fileName,
-
                 mimeType:
                     media.mimeType,
-
-                latencyMs:
-                    Date.now() -
-                    started
+                fileContent:
+                    content,
+                reply:
+                    "File edited successfully."
             });
 
         } catch (
@@ -1631,19 +1659,16 @@ app.post(
 
             return res.status(
                 status >= 400 &&
-                status < 600
+                        status < 600
                     ? status
                     : 500
             ).json({
-
                 success:
                     false,
-
                 error:
                     friendlyError(
                         error
                     ),
-
                 status
             });
         }
@@ -1660,10 +1685,8 @@ app.use(
         return res.status(
             404
         ).json({
-
             success:
                 false,
-
             error:
                 "Endpoint not found."
         });
@@ -1671,7 +1694,7 @@ app.use(
 );
 
 /* =========================================================
-   GLOBAL ERROR HANDLER
+   GLOBAL ERROR
 ========================================================= */
 
 app.use(
@@ -1690,6 +1713,7 @@ app.use(
         if (
             res.headersSent
         ) {
+
             return next(
                 error
             );
@@ -1698,10 +1722,8 @@ app.use(
         return res.status(
             500
         ).json({
-
             success:
                 false,
-
             error:
                 "MechSyntra AI server could not process the request."
         });
@@ -1750,11 +1772,11 @@ if (
             );
 
             console.log(
-                `Image Edit: http://localhost:${PORT}/edit-image`
+                `Image: http://localhost:${PORT}/edit-image`
             );
 
             console.log(
-                `File Edit: http://localhost:${PORT}/edit-file`
+                `File: http://localhost:${PORT}/edit-file`
             );
 
             console.log(
