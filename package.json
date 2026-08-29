@@ -2,19 +2,24 @@
   "name": "mechsyntra-backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "server.js",
   "scripts": {
+    "start": "node server.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "dependencies": {
     "@google/genai": "^2.19.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
     "express": "^5.2.1",
-    "openai": "^7.7.0"
+    "openai": "^7.7.0",
+    "sharp": "^0.35.4"
   }
 }
