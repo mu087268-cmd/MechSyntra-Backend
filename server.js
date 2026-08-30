@@ -1,38 +1,80 @@
+"use strict";
+
 const express = require("express");
 const cors = require("cors");
 const dotenv = require("dotenv");
 const path = require("path");
+const fs = require("fs");
+const crypto = require("crypto");
 const { GoogleGenAI } = require("@google/genai");
-
-const {
-    createWordDocument,
-    createPdfDocument
-} = require("./features/documentGenerator");
 
 dotenv.config();
 
+/* =========================================================
+   APP CONFIGURATION
+========================================================= */
+
 const app = express();
 
-const PORT = process.env.PORT || 3000;
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 
-const PRIMARY_MODEL = "gemini-3.6-flash";
-const FALLBACK_MODEL = "gemini-3.5-flash-lite";
+const NODE_ENV =
+    process.env.NODE_ENV || "development";
 
-const MAX_BODY_SIZE = "18mb";
-const MAX_MEDIA_BASE64_LENGTH = 14 * 1024 * 1024;
+const APP_NAME = "MechSyntra AI";
+const APP_VERSION = "1.0.0";
+
+const GEMINI_API_KEY =
+    process.env.GEMINI_API_KEY;
+
+const PRIMARY_MODEL =
+    process.env.PRIMARY_MODEL ||
+    "gemini-3.6-flash";
+
+const FALLBACK_MODEL =
+    process.env.FALLBACK_MODEL ||
+    "gemini-3.5-flash-lite";
+
+const IMAGE_MODEL =
+    process.env.IMAGE_MODEL ||
+    "gemini-2.5-flash-image";
+
+const MAX_BODY_SIZE =
+    process.env.MAX_BODY_SIZE || "25mb";
+
+const MAX_MESSAGE_LENGTH = 20000;
+
+const MAX_HISTORY_MESSAGES =
+    Number(process.env.MAX_HISTORY_MESSAGES) || 30;
+
+const MAX_MEDIA_BASE64_LENGTH =
+    18 * 1024 * 1024;
+
+const GENERATED_DIR =
+    path.join(__dirname, "generated");
 
 /* =========================================================
-   ENVIRONMENT
+   STARTUP VALIDATION
 ========================================================= */
 
 if (!GEMINI_API_KEY) {
-    console.error("GEMINI_API_KEY is missing.");
+    console.error(
+        "[FATAL] GEMINI_API_KEY is missing."
+    );
+
     process.exit(1);
 }
 
+if (!fs.existsSync(GENERATED_DIR)) {
+    fs.mkdirSync(
+        GENERATED_DIR,
+        { recursive: true }
+    );
+}
+
 /* =========================================================
-   GEMINI
+   AI CLIENT
 ========================================================= */
 
 const ai = new GoogleGenAI({
@@ -40,19 +82,218 @@ const ai = new GoogleGenAI({
 });
 
 /* =========================================================
-   EXPRESS MIDDLEWARE
+   SECURITY
 ========================================================= */
+
+const allowedOrigins =
+    process.env.ALLOWED_ORIGINS
+        ? process.env.ALLOWED_ORIGINS
+            .split(",")
+            .map(origin => origin.trim())
+            .filter(Boolean)
+        : ["*"];
 
 app.use(
     cors({
-        origin: "*",
-        methods: ["GET", "POST", "OPTIONS"],
-        allowedHeaders: ["Content-Type", "Accept"]
+        origin: (origin, callback) => {
+
+            if (
+                allowedOrigins.includes("*") ||
+                !origin
+            ) {
+                return callback(null, true);
+            }
+
+            if (
+                allowedOrigins.includes(origin)
+            ) {
+                return callback(null, true);
+            }
+
+            return callback(
+                new Error(
+                    "CORS origin not allowed."
+                )
+            );
+        },
+
+        methods: [
+            "GET",
+            "POST",
+            "OPTIONS"
+        ],
+
+        allowedHeaders: [
+            "Content-Type",
+            "Accept",
+            "Authorization",
+            "X-Request-ID"
+        ],
+
+        credentials: true
+    })
+);
+
+/* =========================================================
+   SECURITY HEADERS
+========================================================= */
+
+app.disable("x-powered-by");
+
+app.use((req, res, next) => {
+
+    res.setHeader(
+        "X-Content-Type-Options",
+        "nosniff"
+    );
+
+    res.setHeader(
+        "X-Frame-Options",
+        "DENY"
+    );
+
+    res.setHeader(
+        "Referrer-Policy",
+        "no-referrer"
+    );
+
+    res.setHeader(
+        "Permissions-Policy",
+        "camera=(), microphone=()"
+    );
+
+    next();
+});
+
+/* =========================================================
+   REQUEST ID
+========================================================= */
+
+app.use((req, res, next) => {
+
+    const incoming =
+        req.headers["x-request-id"];
+
+    const requestId =
+        typeof incoming === "string" &&
+        incoming.length <= 100
+            ? incoming
+            : crypto.randomUUID();
+
+    req.requestId = requestId;
+
+    res.setHeader(
+        "X-Request-ID",
+        requestId
+    );
+
+    next();
+});
+
+/* =========================================================
+   REQUEST LOGGER
+========================================================= */
+
+app.use((req, res, next) => {
+
+    const start =
+        process.hrtime.bigint();
+
+    res.on("finish", () => {
+
+        const duration =
+            Number(
+                process.hrtime.bigint() -
+                start
+            ) / 1e6;
+
+        console.log(
+            `[HTTP] ${req.method} ${req.originalUrl} ` +
+            `${res.statusCode} ${duration.toFixed(2)}ms ` +
+            `[${req.requestId}]`
+        );
+    });
+
+    next();
+});
+
+/* =========================================================
+   RATE LIMITER
+========================================================= */
+
+const rateLimitStore =
+    new Map();
+
+const RATE_LIMIT_WINDOW =
+    60 * 1000;
+
+const RATE_LIMIT_MAX =
+    Number(
+        process.env.RATE_LIMIT_MAX
+    ) || 60;
+
+function rateLimiter(req, res, next) {
+
+    const key =
+        req.ip || "unknown";
+
+    const now =
+        Date.now();
+
+    const existing =
+        rateLimitStore.get(key);
+
+    if (
+        !existing ||
+        now - existing.start >
+        RATE_LIMIT_WINDOW
+    ) {
+
+        rateLimitStore.set(key, {
+            start: now,
+            count: 1
+        });
+
+        return next();
+    }
+
+    existing.count++;
+
+    if (
+        existing.count >
+        RATE_LIMIT_MAX
+    ) {
+
+        return res.status(429).json({
+
+            success: false,
+
+            error:
+                "Too many requests. Please try again shortly.",
+
+            requestId:
+                req.requestId
+        });
+    }
+
+    next();
+}
+
+app.use(rateLimiter);
+
+/* =========================================================
+   BODY PARSING
+========================================================= */
+
+app.use(
+    express.json({
+        limit: MAX_BODY_SIZE
     })
 );
 
 app.use(
-    express.json({
+    express.urlencoded({
+        extended: true,
         limit: MAX_BODY_SIZE
     })
 );
@@ -64,7 +305,15 @@ app.use(
 app.use(
     "/generated",
     express.static(
-        path.join(__dirname, "generated")
+        GENERATED_DIR,
+        {
+            maxAge:
+                NODE_ENV === "production"
+                    ? "1h"
+                    : 0,
+
+            index: false
+        }
     )
 );
 
@@ -78,65 +327,104 @@ You are MechSyntra AI.
 Founder:
 Usman Choudhary
 
-You are a professional general-purpose AI assistant.
+You are a professional general-purpose AI assistant
+with strong capabilities in engineering, education,
+research, programming, documents and productivity.
 
-LANGUAGE RULE:
-- Detect the language used by the user.
-- Normally reply in the same language as the user.
-- If the user explicitly requests a language, always use that language.
-- Support English, Urdu, Roman Urdu and other languages supported by the model.
-- If the user says "Roman Urdu mein batao", reply in Roman Urdu.
-- If the user says "Urdu mein batao", reply in Urdu.
-- If the user says "English mein batao", reply in English.
-- Do not automatically switch to English when the user is using Roman Urdu.
+CONVERSATION MEMORY:
+
+Treat the supplied history as the same continuous conversation.
+
+Use previous messages to understand:
+
+- Context
+- Pending requests
+- User intent
+- Previous answers
+- Topics
+- File/document requests
+- Presentation requests
+
+If the user says:
+
+"yes"
+"okay"
+"continue"
+"do it"
+"make it"
+"generate it"
+"same"
+"this one"
+
+interpret the message using the previous conversation.
+
+Do not unnecessarily ask the user to repeat information
+already established in the conversation.
+
+LANGUAGE:
+
+Detect the user's language.
+
+Normally respond in the same language.
+
+Support:
+- English
+- Urdu
+- Roman Urdu
+- Other supported languages
+
+If the user explicitly requests a language,
+follow that request.
 
 GENERAL:
-- Give accurate, useful and natural answers.
+
+- Be accurate.
 - Do not invent facts.
-- Do not claim an action was performed if it was not performed.
-- Keep simple questions concise.
-- Give detailed answers when required.
+- Do not fabricate sources.
+- Do not claim a file was generated unless the application
+  actually generated it.
+- Keep simple responses concise.
+- Give detailed answers when necessary.
 
 MEDIA:
-- Inspect supplied images, PDFs and audio when supported.
-- Never claim a file was inspected if no file was supplied.
-- If media is unclear or unreadable, say so.
-- Never invent information from attachments.
 
-MATHEMATICS:
-- Calculate carefully.
-- Verify arithmetic.
-- Show useful steps when appropriate.
-- Use readable plain-text formulas.
+Only analyze media that is actually supplied.
+
+Never pretend that an attachment was inspected when
+no attachment exists.
 
 CODING:
-- Provide practical and correct code.
+
+Provide practical and correct code.
 
 ENGINEERING:
-- Clearly separate observations from recommendations.
-- For safety-critical matters, recommend professional verification.
 
-ASSIGNMENTS:
-- When the user asks for an assignment, create a complete academic assignment.
-- Include a suitable title.
-- Include Introduction.
-- Include relevant sections and subtopics.
-- Include examples where useful.
-- Include Conclusion.
-- Include References only when reliable references are available.
-- Do not fabricate references, studies, statistics or citations.
-- Match the requested language.
-- Match the requested educational level when provided.
+Be technically careful.
+
+Separate:
+- Known information
+- Assumptions
+- Recommendations
+
+Never invent measurements, calculations,
+experimental results or engineering test data.
 
 DOCUMENTS:
-- If the user asks for an assignment, report, notes or other content as Word/DOCX/PDF, generate complete structured content.
-- The backend can convert assignment content into Word and PDF files.
 
-RESPONSE:
-- Use readable normal text.
-- Do not use unnecessary Markdown.
-- Do not use Markdown headings with #.
-- Do not return JSON as the normal AI answer.
+When the application provides a document-generation endpoint,
+return structured content appropriate for that document.
+
+PRESENTATIONS:
+
+When presentation generation is requested,
+produce presentation-ready slide content rather than
+a normal explanatory answer.
+
+CHAT:
+
+Respond naturally and directly.
+
+Do not output JSON unless the endpoint specifically requires it.
 `;
 
 /* =========================================================
@@ -144,7 +432,10 @@ RESPONSE:
 ========================================================= */
 
 function normalizeMimeType(value) {
-    if (typeof value !== "string") {
+
+    if (
+        typeof value !== "string"
+    ) {
         return "";
     }
 
@@ -154,20 +445,79 @@ function normalizeMimeType(value) {
         .toLowerCase();
 }
 
-function isSupportedMediaMime(mimeType) {
+function stripDataUrlPrefix(value) {
+
+    if (
+        typeof value !== "string"
+    ) {
+        return "";
+    }
+
+    const comma =
+        value.indexOf(",");
+
+    if (
+        value.startsWith("data:") &&
+        comma !== -1
+    ) {
+        return value
+            .slice(comma + 1)
+            .trim();
+    }
+
+    return value.trim();
+}
+
+function looksLikeBase64(value) {
+
+    if (
+        typeof value !== "string"
+    ) {
+        return false;
+    }
+
+    const clean =
+        stripDataUrlPrefix(value);
+
+    if (!clean) {
+        return false;
+    }
+
+    if (
+        clean.length >
+        MAX_MEDIA_BASE64_LENGTH
+    ) {
+        return false;
+    }
+
+    return /^[A-Za-z0-9+/=\s]+$/
+        .test(clean);
+}
+
+function isSupportedMediaMime(
+    mimeType
+) {
+
     if (!mimeType) {
         return false;
     }
 
-    if (mimeType.startsWith("image/")) {
+    if (
+        mimeType.startsWith("image/")
+    ) {
         return true;
     }
 
-    if (mimeType.startsWith("audio/")) {
+    if (
+        mimeType.startsWith("audio/")
+    ) {
         return true;
     }
 
-    if (mimeType === "application/pdf") {
+    if (
+        mimeType ===
+        "application/pdf"
+    ) {
         return true;
     }
 
@@ -183,63 +533,137 @@ function isSupportedMediaMime(mimeType) {
     ].includes(mimeType);
 }
 
-function stripDataUrlPrefix(base64) {
-    if (typeof base64 !== "string") {
-        return "";
-    }
-
-    const commaIndex = base64.indexOf(",");
-
-    if (
-        base64.startsWith("data:") &&
-        commaIndex >= 0
-    ) {
-        return base64
-            .slice(commaIndex + 1)
-            .trim();
-    }
-
-    return base64.trim();
-}
-
-function looksLikeBase64(value) {
-    if (typeof value !== "string") {
-        return false;
-    }
-
-    const clean = stripDataUrlPrefix(value);
-
-    if (
-        clean.length === 0 ||
-        clean.length > MAX_MEDIA_BASE64_LENGTH
-    ) {
-        return false;
-    }
-
-    return /^[A-Za-z0-9+/=\s]+$/.test(clean);
-}
-
 function createInlineDataPart(
     mimeType,
-    base64Data
+    base64
 ) {
+
     return {
         inlineData: {
-            mimeType: mimeType,
-            data: stripDataUrlPrefix(base64Data)
+            mimeType,
+            data:
+                stripDataUrlPrefix(
+                    base64
+                )
         }
     };
 }
 
-function buildUserParts(body) {
-    const parts = [];
+/* =========================================================
+   HISTORY
+========================================================= */
 
-    const message =
-        typeof body?.message === "string"
-            ? body.message.trim()
-            : "";
+function normalizeHistory(
+    history
+) {
 
-    const mediaBase64 =
+    if (
+        !Array.isArray(history)
+    ) {
+        return [];
+    }
+
+    return history
+        .slice(-MAX_HISTORY_MESSAGES)
+        .map(item => {
+
+            const role =
+                item?.role === "model" ||
+                item?.role === "assistant"
+                    ? "model"
+                    : "user";
+
+            const text =
+                typeof item?.text === "string"
+                    ? item.text.trim()
+                    : typeof item?.message === "string"
+                        ? item.message.trim()
+                        : typeof item?.content === "string"
+                            ? item.content.trim()
+                            : "";
+
+            if (!text) {
+                return null;
+            }
+
+            return {
+                role,
+                parts: [
+                    {
+                        text
+                    }
+                ]
+            };
+        })
+        .filter(Boolean);
+}
+
+function buildConversationContents(
+    message,
+    history = [],
+    media = null
+) {
+
+    const contents = [];
+
+    const normalizedHistory =
+        normalizeHistory(history);
+
+    contents.push(
+        ...normalizedHistory
+    );
+
+    const currentParts = [];
+
+    if (
+        typeof message === "string" &&
+        message.trim()
+    ) {
+
+        currentParts.push({
+            text: message.trim()
+        });
+    }
+
+    if (
+        media?.base64 &&
+        media?.mimeType
+    ) {
+
+        currentParts.push(
+            createInlineDataPart(
+                media.mimeType,
+                media.base64
+            )
+        );
+    }
+
+    if (
+        currentParts.length === 0
+    ) {
+
+        throw new Error(
+            "Message or media is required."
+        );
+    }
+
+    contents.push({
+        role: "user",
+        parts: currentParts
+    });
+
+    return contents;
+}
+
+/* =========================================================
+   MEDIA
+========================================================= */
+
+function getMediaFromBody(
+    body
+) {
+
+    const base64 =
         typeof body?.mediaBase64 === "string"
             ? body.mediaBase64
             : typeof body?.imageBase64 === "string"
@@ -248,210 +672,317 @@ function buildUserParts(body) {
                     ? body.fileBase64
                     : "";
 
-    const mimeType = normalizeMimeType(
-        body?.mimeType ||
-        body?.mediaMimeType ||
-        ""
-    );
-
-    const fileName =
-        typeof body?.fileName === "string"
-            ? body.fileName.trim()
-            : "";
-
-    if (message) {
-        parts.push({
-            text: message
-        });
+    if (!base64) {
+        return null;
     }
 
-    if (mediaBase64) {
-        if (!mimeType) {
-            throw new Error(
-                "MIME type is required when a file or image is attached."
-            );
-        }
-
-        if (!isSupportedMediaMime(mimeType)) {
-            throw new Error(
-                `Unsupported media type: ${mimeType}`
-            );
-        }
-
-        if (!looksLikeBase64(mediaBase64)) {
-            throw new Error(
-                "Invalid or oversized base64 media data."
-            );
-        }
-
-        if (fileName) {
-            parts.push({
-                text:
-                    `Attached file name: ${fileName}`
-            });
-        }
-
-        parts.push(
-            createInlineDataPart(
-                mimeType,
-                mediaBase64
-            )
+    const mimeType =
+        normalizeMimeType(
+            body?.mimeType ||
+            body?.mediaMimeType ||
+            "image/jpeg"
         );
-    }
 
-    if (parts.length === 0) {
+    if (
+        !isSupportedMediaMime(
+            mimeType
+        )
+    ) {
+
         throw new Error(
-            "Message or media is required."
+            `Unsupported media type: ${mimeType}`
         );
     }
 
-    return parts;
+    if (
+        !looksLikeBase64(
+            base64
+        )
+    ) {
+
+        throw new Error(
+            "Invalid or oversized media data."
+        );
+    }
+
+    return {
+        base64,
+        mimeType
+    };
 }
 
-function getErrorStatus(error) {
-    const possibleStatus =
+/* =========================================================
+   ERROR HANDLING
+========================================================= */
+
+function getErrorStatus(
+    error
+) {
+
+    const value =
         error?.status ??
         error?.code ??
         error?.response?.status ??
         500;
 
-    const numericStatus = Number(possibleStatus);
+    const status =
+        Number(value);
 
-    return Number.isFinite(numericStatus)
-        ? numericStatus
+    return Number.isFinite(status)
+        ? status
         : 500;
 }
 
-function getFriendlyError(error) {
-    const status = getErrorStatus(error);
+function getFriendlyError(
+    error
+) {
+
+    const status =
+        getErrorStatus(error);
 
     console.error(
-        "Gemini status:",
-        status
+        "[AI ERROR]",
+        error?.message || error
     );
 
-    console.error(
-        "Gemini message:",
-        error?.message || ""
-    );
+    switch (status) {
 
-    if (status === 400) {
-        return "Gemini rejected the request. Please check the message, file type or media format.";
+        case 400:
+            return "The request was invalid. Please check your message or media.";
+
+        case 401:
+            return "Gemini authentication failed. Please check the API key.";
+
+        case 403:
+            return "Gemini access was denied. Please check API permissions.";
+
+        case 404:
+            return "The configured AI model is unavailable.";
+
+        case 413:
+            return "The uploaded content is too large.";
+
+        case 429:
+            return "AI rate limit reached. Please try again shortly.";
+
+        case 500:
+        case 502:
+        case 503:
+        case 504:
+            return "The AI service is temporarily unavailable.";
+
+        default:
+            return "MechSyntra AI could not complete the request.";
     }
-
-    if (status === 401) {
-        return "Gemini API authentication failed. Please check the API key.";
-    }
-
-    if (status === 403) {
-        return "Gemini API access was denied. Please check project permissions.";
-    }
-
-    if (status === 404) {
-        return "The configured Gemini model is unavailable for this project.";
-    }
-
-    if (status === 413) {
-        return "The attached file is too large. Please use a smaller file.";
-    }
-
-    if (status === 429) {
-        return "Gemini is temporarily rate-limited. Please try again shortly.";
-    }
-
-    if (
-        status === 500 ||
-        status === 502 ||
-        status === 503 ||
-        status === 504
-    ) {
-        return "Gemini is temporarily unavailable. Please try again shortly.";
-    }
-
-    return "MechSyntra AI could not generate a response right now.";
 }
 
-function cleanResponse(text) {
-    if (typeof text !== "string") {
+function sendError(
+    res,
+    req,
+    status,
+    message
+) {
+
+    return res.status(status).json({
+
+        success: false,
+
+        error: message,
+
+        requestId:
+            req.requestId
+    });
+}
+
+/* =========================================================
+   RESPONSE CLEANER
+========================================================= */
+
+function cleanResponse(
+    text
+) {
+
+    if (
+        typeof text !== "string"
+    ) {
         return "";
     }
 
-    let result = text.trim();
-
-    result = result.replace(
-        /^```(?:text|markdown|md)?\s*/i,
-        ""
-    );
-
-    result = result.replace(
-        /\s*```$/i,
-        ""
-    );
-
-    result = result.replace(
-        /^#{1,6}\s*/gm,
-        ""
-    );
-
-    result = result.replace(
-        /\*\*(.*?)\*\*/gs,
-        "$1"
-    );
-
-    result = result.replace(
-        /__(.*?)__/gs,
-        "$1"
-    );
-
-    result = result.replace(
-        /`([^`]+)`/g,
-        "$1"
-    );
-
-    result = result.replace(
-        /`/g,
-        ""
-    );
-
-    result = result.replace(
-        /^\s*[-*_]{3,}\s*$/gm,
-        ""
-    );
-
-    result = result.replace(
-        /\n{3,}/g,
-        "\n\n"
-    );
-
-    return result.trim();
+    return text
+        .trim()
+        .replace(
+            /^```(?:text|markdown|md)?\s*/i,
+            ""
+        )
+        .replace(
+            /\s*```$/i,
+            ""
+        )
+        .replace(
+            /\n{3,}/g,
+            "\n\n"
+        )
+        .trim();
 }
+
+/* =========================================================
+   GEMINI
+========================================================= */
 
 async function generateWithModel(
     model,
     contents
 ) {
-    return await ai.models.generateContent({
-        model: model,
-        contents: contents,
+
+    return ai.models.generateContent({
+
+        model,
+
+        contents,
+
         config: {
+
             systemInstruction:
-                SYSTEM_INSTRUCTION
+                SYSTEM_INSTRUCTION,
+
+            temperature: 0.7
         }
     });
 }
 
+async function generateAI(
+    contents
+) {
+
+    let response;
+    let primaryError;
+
+    try {
+
+        console.log(
+            `[AI] Primary: ${PRIMARY_MODEL}`
+        );
+
+        response =
+            await generateWithModel(
+                PRIMARY_MODEL,
+                contents
+            );
+
+    } catch (error) {
+
+        primaryError =
+            error;
+
+        console.error(
+            "[AI] Primary failed:",
+            error?.message
+        );
+    }
+
+    if (!response) {
+
+        try {
+
+            console.log(
+                `[AI] Fallback: ${FALLBACK_MODEL}`
+            );
+
+            response =
+                await generateWithModel(
+                    FALLBACK_MODEL,
+                    contents
+                );
+
+        } catch (fallbackError) {
+
+            console.error(
+                "[AI] Fallback failed:",
+                fallbackError?.message
+            );
+
+            throw (
+                fallbackError ||
+                primaryError
+            );
+        }
+    }
+
+    let text = "";
+
+    try {
+
+        if (
+            typeof response.text ===
+            "string"
+        ) {
+
+            text =
+                response.text.trim();
+        }
+
+    } catch (error) {
+
+        console.error(
+            "[AI] Response parsing failed:",
+            error?.message
+        );
+    }
+
+    text =
+        cleanResponse(text);
+
+    if (!text) {
+
+        throw new Error(
+            "AI returned an empty response."
+        );
+    }
+
+    return text;
+}
+
 /* =========================================================
-   HOME
+   API INFO
 ========================================================= */
 
 app.get("/", (req, res) => {
-    return res.status(200).json({
+
+    res.json({
+
         success: true,
-        service: "MechSyntra AI",
-        status: "online",
-        model: PRIMARY_MODEL,
-        multimodal: true,
-        documents: true
+
+        service: APP_NAME,
+
+        version:
+            APP_VERSION,
+
+        status:
+            "online",
+
+        environment:
+            NODE_ENV,
+
+        requestId:
+            req.requestId,
+
+        capabilities: {
+
+            chat: true,
+
+            multimodal: true,
+
+            conversationMemory: true,
+
+            assignments: true,
+
+            documents: true,
+
+            presentations: true,
+
+            imageEditing: true
+
+        }
     });
 });
 
@@ -459,25 +990,540 @@ app.get("/", (req, res) => {
    HEALTH
 ========================================================= */
 
-app.get("/health", (req, res) => {
-    return res.status(200).json({
-        success: true,
-        status: "healthy",
-        model: PRIMARY_MODEL,
-        multimodal: true,
-        documents: true
-    });
-});
+app.get(
+    "/health",
+    (req, res) => {
+
+        res.status(200).json({
+
+            success: true,
+
+            status: "healthy",
+
+            service:
+                APP_NAME,
+
+            version:
+                APP_VERSION,
+
+            uptime:
+                Math.floor(
+                    process.uptime()
+                ),
+
+            timestamp:
+                new Date().toISOString(),
+
+            requestId:
+                req.requestId
+        });
+    }
+);
 
 /* =========================================================
-   GENERATE ASSIGNMENT
+   READINESS
+========================================================= */
+
+app.get(
+    "/ready",
+    (req, res) => {
+
+        const ready =
+            Boolean(
+                GEMINI_API_KEY
+            );
+
+        return res
+            .status(
+                ready ? 200 : 503
+            )
+            .json({
+
+                success:
+                    ready,
+
+                status:
+                    ready
+                        ? "ready"
+                        : "not_ready",
+
+                aiConfigured:
+                    ready,
+
+                requestId:
+                    req.requestId
+            });
+    }
+);
+
+/* =========================================================
+   CHAT HANDLER
+========================================================= */
+
+async function chatHandler(
+    req,
+    res
+) {
+
+    try {
+
+        const message =
+            typeof req.body?.message === "string"
+                ? req.body.message.trim()
+                : "";
+
+        const history =
+            Array.isArray(
+                req.body?.history
+            )
+                ? req.body.history
+                : Array.isArray(
+                    req.body?.messages
+                )
+                    ? req.body.messages
+                    : [];
+
+        if (
+            message.length >
+            MAX_MESSAGE_LENGTH
+        ) {
+
+            return sendError(
+                res,
+                req,
+                413,
+                "Message is too long."
+            );
+        }
+
+        const media =
+            getMediaFromBody(
+                req.body
+            );
+
+        if (
+            !message &&
+            !media
+        ) {
+
+            return sendError(
+                res,
+                req,
+                400,
+                "Message or media is required."
+            );
+        }
+
+        const contents =
+            buildConversationContents(
+                message,
+                history,
+                media
+            );
+
+        const answer =
+            await generateAI(
+                contents
+            );
+
+        return res.status(200).json({
+
+            success: true,
+
+            reply:
+                answer,
+
+            requestId:
+                req.requestId,
+
+            conversationMemory:
+                true,
+
+            historyUsed:
+                normalizeHistory(
+                    history
+                ).length
+        });
+
+    } catch (error) {
+
+        console.error(
+            "[CHAT ERROR]",
+            error
+        );
+
+        const status =
+            getErrorStatus(error);
+
+        return sendError(
+            res,
+            req,
+            status >= 400 &&
+            status < 600
+                ? status
+                : 500,
+            getFriendlyError(
+                error
+            )
+        );
+    }
+}
+
+/* =========================================================
+   CHAT ROUTES
 ========================================================= */
 
 app.post(
-    "/generate-assignment",
+    "/chat",
+    chatHandler
+);
+
+app.post(
+    "/api/v1/chat",
+    chatHandler
+);
+
+/* =========================================================
+   PRESENTATION GENERATOR
+========================================================= */
+
+async function presentationHandler(
+    req,
+    res
+) {
+
+    try {
+
+        const topic =
+            typeof req.body?.topic === "string"
+                ? req.body.topic.trim()
+                : "";
+
+        const language =
+            typeof req.body?.language === "string"
+                ? req.body.language.trim()
+                : "English";
+
+        const slides =
+            Math.min(
+                Math.max(
+                    Number(
+                        req.body?.slides
+                    ) || 10,
+                    3
+                ),
+                40
+            );
+
+        if (!topic) {
+
+            return sendError(
+                res,
+                req,
+                400,
+                "Presentation topic is required."
+            );
+        }
+
+        const prompt = `
+Create a professional presentation.
+
+Topic:
+${topic}
+
+Language:
+${language}
+
+Number of slides:
+${slides}
+
+Return presentation-ready content.
+
+Structure:
+
+TITLE:
+[Title]
+
+SLIDE 1:
+Title:
+Content:
+Speaker Notes:
+
+SLIDE 2:
+Title:
+Content:
+Speaker Notes:
+
+Continue until ${slides} slides.
+
+Include relevant:
+- Introduction
+- Main concepts
+- Examples
+- Applications
+- Important points
+- Conclusion
+
+Do not ask for the topic again.
+`;
+
+        const contents =
+            buildConversationContents(
+                prompt
+            );
+
+        const content =
+            await generateAI(
+                contents
+            );
+
+        return res.status(200).json({
+
+            success: true,
+
+            type:
+                "presentation",
+
+            topic,
+
+            language,
+
+            slides,
+
+            content,
+
+            requestId:
+                req.requestId
+        });
+
+    } catch (error) {
+
+        console.error(
+            "[PRESENTATION ERROR]",
+            error
+        );
+
+        return sendError(
+            res,
+            req,
+            500,
+            getFriendlyError(
+                error
+            )
+        );
+    }
+}
+
+app.post(
+    "/generate-presentation",
+    presentationHandler
+);
+
+app.post(
+    "/api/v1/generate-presentation",
+    presentationHandler
+);
+
+/* =========================================================
+   DOCUMENT GENERATOR
+========================================================= */
+
+let documentGenerator = null;
+
+try {
+
+    documentGenerator =
+        require(
+            "./features/documentGenerator"
+        );
+
+    console.log(
+        "[SYSTEM] Document generator loaded."
+    );
+
+} catch (error) {
+
+    console.warn(
+        "[SYSTEM] Document generator unavailable:",
+        error?.message
+    );
+}
+
+/* =========================================================
+   DOCUMENT ROUTE
+========================================================= */
+
+app.post(
+    [
+        "/generate-document",
+        "/api/v1/generate-document"
+    ],
     async (req, res) => {
 
         try {
+
+            if (!documentGenerator) {
+
+                return sendError(
+                    res,
+                    req,
+                    500,
+                    "Document generator module is unavailable."
+                );
+            }
+
+            const {
+                title,
+                content,
+                format = "both",
+                fileName
+            } = req.body || {};
+
+            if (
+                typeof content !== "string" ||
+                !content.trim()
+            ) {
+
+                return sendError(
+                    res,
+                    req,
+                    400,
+                    "Document content is required."
+                );
+            }
+
+            if (
+                ![
+                    "word",
+                    "pdf",
+                    "both"
+                ].includes(format)
+            ) {
+
+                return sendError(
+                    res,
+                    req,
+                    400,
+                    "Format must be word, pdf or both."
+                );
+            }
+
+            const cleanTitle =
+                typeof title === "string" &&
+                title.trim()
+                    ? title.trim()
+                    : "MechSyntra Document";
+
+            const files = [];
+
+            if (
+                format === "word" ||
+                format === "both"
+            ) {
+
+                const word =
+                    await documentGenerator
+                        .createWordDocument({
+
+                            title:
+                                cleanTitle,
+
+                            content,
+
+                            fileName
+                        });
+
+                files.push({
+
+                    type: "word",
+
+                    fileName:
+                        word.fileName,
+
+                    url:
+                        `/generated/${word.fileName}`,
+
+                    mimeType:
+                        word.mimeType
+                });
+            }
+
+            if (
+                format === "pdf" ||
+                format === "both"
+            ) {
+
+                const pdf =
+                    await documentGenerator
+                        .createPdfDocument({
+
+                            title:
+                                cleanTitle,
+
+                            content,
+
+                            fileName
+                        });
+
+                files.push({
+
+                    type: "pdf",
+
+                    fileName:
+                        pdf.fileName,
+
+                    url:
+                        `/generated/${pdf.fileName}`,
+
+                    mimeType:
+                        pdf.mimeType
+                });
+            }
+
+            return res.status(200).json({
+
+                success: true,
+
+                message:
+                    "Document generated successfully.",
+
+                files,
+
+                requestId:
+                    req.requestId
+            });
+
+        } catch (error) {
+
+            console.error(
+                "[DOCUMENT ERROR]",
+                error
+            );
+
+            return sendError(
+                res,
+                req,
+                500,
+                error?.message ||
+                "Could not generate the document."
+            );
+        }
+    }
+);
+
+/* =========================================================
+   ASSIGNMENT
+========================================================= */
+
+app.post(
+    [
+        "/generate-assignment",
+        "/api/v1/generate-assignment"
+    ],
+    async (req, res) => {
+
+        try {
+
             const {
                 topic,
                 language = "English",
@@ -490,18 +1536,14 @@ app.post(
                 typeof topic !== "string" ||
                 !topic.trim()
             ) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        "Assignment topic is required."
-                });
-            }
 
-            const requestedLanguage =
-                typeof language === "string" &&
-                language.trim()
-                    ? language.trim()
-                    : "English";
+                return sendError(
+                    res,
+                    req,
+                    400,
+                    "Assignment topic is required."
+                );
+            }
 
             const requestedPages =
                 Math.min(
@@ -512,167 +1554,86 @@ app.post(
                     50
                 );
 
-            const assignmentPrompt = `
+            const prompt = `
 Create a complete academic assignment.
 
 Topic:
 ${topic.trim()}
 
-Required language:
-${requestedLanguage}
+Language:
+${language}
 
 Target length:
 Approximately ${requestedPages} pages.
 
-Requirements:
-- Write entirely in the requested language.
-- If the requested language is Roman Urdu, write Urdu using English/Roman letters.
-- Do not switch language unnecessarily.
-- Include a clear title.
-- Include Introduction.
-- Include relevant sections and subtopics.
-- Explain the topic properly and academically.
-- Include examples where useful.
-- Include Conclusion.
-- Include References only if reliable references can be provided.
-- Never invent citations, statistics, studies or references.
-- Do not mention that you are an AI.
-- Return only the assignment content.
+Include:
+
+- Title
+- Introduction
+- Relevant sections
+- Detailed explanations
+- Examples where useful
+- Conclusion
+- References only when reliable
+
+Never invent citations or sources.
+
+Return assignment content only.
 `;
 
-            const contents = [
-                {
-                    role: "user",
-                    parts: [
-                        {
-                            text:
-                                assignmentPrompt
-                        }
-                    ]
-                }
-            ];
-
-            let response = null;
-            let lastError = null;
-
-            try {
-                console.log(
-                    "Generating assignment with:",
-                    PRIMARY_MODEL
+            const content =
+                await generateAI(
+                    buildConversationContents(
+                        prompt
+                    )
                 );
 
-                response =
-                    await generateWithModel(
-                        PRIMARY_MODEL,
-                        contents
-                    );
+            if (!documentGenerator) {
 
-            } catch (error) {
-                lastError = error;
-
-                console.error(
-                    "Assignment primary error:",
-                    getErrorStatus(error),
-                    error?.message
+                return sendError(
+                    res,
+                    req,
+                    500,
+                    "Document generator module is unavailable."
                 );
             }
 
-            if (!response) {
-                try {
-                    console.log(
-                        "Trying assignment fallback:",
-                        FALLBACK_MODEL
-                    );
-
-                    response =
-                        await generateWithModel(
-                            FALLBACK_MODEL,
-                            contents
-                        );
-
-                } catch (error) {
-                    lastError = error;
-
-                    console.error(
-                        "Assignment fallback error:",
-                        getErrorStatus(error),
-                        error?.message
-                    );
-                }
-            }
-
-            if (!response) {
-                return res.status(502).json({
-                    success: false,
-                    error:
-                        getFriendlyError(
-                            lastError
-                        ),
-                    status:
-                        getErrorStatus(
-                            lastError
-                        )
-                });
-            }
-
-            let assignmentContent = "";
-
-            try {
-                if (
-                    typeof response.text ===
-                    "string"
-                ) {
-                    assignmentContent =
-                        response.text.trim();
-                }
-            } catch (error) {
-                console.error(
-                    "Assignment extraction error:",
-                    error?.message
-                );
-            }
-
-            assignmentContent =
-                cleanResponse(
-                    assignmentContent
-                );
-
-            if (!assignmentContent) {
-                return res.status(502).json({
-                    success: false,
-                    error:
-                        "Gemini returned empty assignment content."
-                });
-            }
+            const files = [];
 
             const cleanTitle =
                 topic
                     .trim()
                     .slice(0, 120);
 
-            const generatedFiles = [];
-
             if (
                 format === "word" ||
                 format === "both"
             ) {
-                const word =
-                    await createWordDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            assignmentContent,
-                        fileName:
-                            fileName ||
-                            cleanTitle
-                    });
 
-                generatedFiles.push({
+                const word =
+                    await documentGenerator
+                        .createWordDocument({
+
+                            title:
+                                cleanTitle,
+
+                            content,
+
+                            fileName:
+                                fileName ||
+                                cleanTitle
+                        });
+
+                files.push({
+
                     type: "word",
+
                     fileName:
                         word.fileName,
+
                     url:
                         `/generated/${word.fileName}`,
+
                     mimeType:
                         word.mimeType
                 });
@@ -682,436 +1643,468 @@ Requirements:
                 format === "pdf" ||
                 format === "both"
             ) {
-                const pdf =
-                    await createPdfDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            assignmentContent,
-                        fileName:
-                            fileName ||
-                            cleanTitle
-                    });
 
-                generatedFiles.push({
+                const pdf =
+                    await documentGenerator
+                        .createPdfDocument({
+
+                            title:
+                                cleanTitle,
+
+                            content,
+
+                            fileName:
+                                fileName ||
+                                cleanTitle
+                        });
+
+                files.push({
+
                     type: "pdf",
+
                     fileName:
                         pdf.fileName,
+
                     url:
                         `/generated/${pdf.fileName}`,
+
                     mimeType:
                         pdf.mimeType
                 });
             }
 
-            if (
-                generatedFiles.length === 0
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        "Format must be word, pdf or both."
-                });
-            }
-
             return res.status(200).json({
+
                 success: true,
+
                 message:
                     "Assignment generated successfully.",
+
                 title:
                     cleanTitle,
-                language:
-                    requestedLanguage,
-                files:
-                    generatedFiles,
-                reply:
-                    "Your assignment has been generated successfully."
-            });
 
-        } catch (error) {
+                language,
 
-            console.error(
-                "Generate assignment error:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                error:
-                    "Could not generate the assignment."
-            });
-        }
-    }
-);
-
-/* =========================================================
-   GENERATE DOCUMENT
-========================================================= */
-
-app.post(
-    "/generate-document",
-    async (req, res) => {
-
-        try {
-            const {
-                title,
                 content,
-                format = "both",
-                fileName
-            } = req.body || {};
 
-            if (
-                typeof content !== "string" ||
-                !content.trim()
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        "Document content is required."
-                });
-            }
+                files,
 
-            const cleanTitle =
-                typeof title === "string" &&
-                title.trim()
-                    ? title.trim()
-                    : "MechSyntra Assignment";
-
-            const results = [];
-
-            if (
-                format === "word" ||
-                format === "both"
-            ) {
-                const word =
-                    await createWordDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            content,
-                        fileName:
-                            fileName
-                    });
-
-                results.push({
-                    type: "word",
-                    fileName:
-                        word.fileName,
-                    url:
-                        `/generated/${word.fileName}`,
-                    mimeType:
-                        word.mimeType
-                });
-            }
-
-            if (
-                format === "pdf" ||
-                format === "both"
-            ) {
-                const pdf =
-                    await createPdfDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            content,
-                        fileName:
-                            fileName
-                    });
-
-                results.push({
-                    type: "pdf",
-                    fileName:
-                        pdf.fileName,
-                    url:
-                        `/generated/${pdf.fileName}`,
-                    mimeType:
-                        pdf.mimeType
-                });
-            }
-
-            if (results.length === 0) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        "Format must be word, pdf or both."
-                });
-            }
-
-            return res.status(200).json({
-                success: true,
-                message:
-                    "Document generated successfully.",
-                files:
-                    results
+                requestId:
+                    req.requestId
             });
 
         } catch (error) {
 
             console.error(
-                "Document generation error:",
+                "[ASSIGNMENT ERROR]",
                 error
             );
 
-            return res.status(500).json({
-                success: false,
-                error:
-                    "Could not generate the requested document."
-            });
+            return sendError(
+                res,
+                req,
+                500,
+                error?.message ||
+                "Could not generate the assignment."
+            );
         }
     }
 );
 
 /* =========================================================
-   CHAT
+   IMAGE EDITING
 ========================================================= */
 
 app.post(
-    "/chat",
+    [
+        "/edit-image",
+        "/api/v1/edit-image"
+    ],
     async (req, res) => {
 
         try {
-            const message =
-                typeof req.body?.message === "string"
-                    ? req.body.message.trim()
+
+            const prompt =
+                typeof req.body?.prompt === "string"
+                    ? req.body.prompt.trim()
                     : "";
 
-            if (message.length > 20000) {
-                return res.status(413).json({
-                    success: false,
-                    error:
-                        "Message is too long."
-                });
-            }
+            const media =
+                getMediaFromBody(
+                    req.body
+                );
 
-            const mediaBase64 =
-                typeof req.body?.mediaBase64 === "string"
-                    ? req.body.mediaBase64
-                    : "";
+            if (!prompt) {
 
-            if (
-                mediaBase64 &&
-                mediaBase64.length >
-                    MAX_MEDIA_BASE64_LENGTH
-            ) {
-                return res.status(413).json({
-                    success: false,
-                    error:
-                        "Attached media is too large."
-                });
-            }
-
-            let contents;
-
-            try {
-                const parts =
-                    buildUserParts(
-                        req.body
-                    );
-
-                contents = [
-                    {
-                        role: "user",
-                        parts: parts
-                    }
-                ];
-
-            } catch (inputError) {
-
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        inputError.message
-                });
-            }
-
-            let response = null;
-            let lastError = null;
-
-            try {
-                response =
-                    await generateWithModel(
-                        PRIMARY_MODEL,
-                        contents
-                    );
-
-            } catch (error) {
-
-                lastError = error;
-
-                console.error(
-                    "Primary error:",
-                    getErrorStatus(error),
-                    error?.message
+                return sendError(
+                    res,
+                    req,
+                    400,
+                    "Image editing instruction is required."
                 );
             }
 
-            if (!response) {
-                try {
-                    response =
-                        await generateWithModel(
-                            FALLBACK_MODEL,
-                            contents
-                        );
+            if (!media) {
 
-                } catch (error) {
-
-                    lastError = error;
-
-                    console.error(
-                        "Fallback error:",
-                        getErrorStatus(error),
-                        error?.message
-                    );
-                }
+                return sendError(
+                    res,
+                    req,
+                    400,
+                    "An image is required."
+                );
             }
 
-            if (!response) {
-                return res.status(502).json({
-                    success: false,
-                    error:
-                        getFriendlyError(
-                            lastError
-                        ),
-                    status:
-                        getErrorStatus(
-                            lastError
-                        )
+            if (
+                !media.mimeType.startsWith(
+                    "image/"
+                )
+            ) {
+
+                return sendError(
+                    res,
+                    req,
+                    400,
+                    "Only image files can be edited."
+                );
+            }
+
+            const response =
+                await ai.models.generateContent({
+
+                    model:
+                        IMAGE_MODEL,
+
+                    contents: [
+                        {
+                            role: "user",
+
+                            parts: [
+
+                                {
+                                    text:
+                                        prompt
+                                },
+
+                                createInlineDataPart(
+                                    media.mimeType,
+                                    media.base64
+                                )
+                            ]
+                        }
+                    ]
                 });
-            }
 
-            let answer = "";
+            const parts =
+                response
+                    ?.candidates?.[0]
+                    ?.content?.parts || [];
 
-            try {
+            let imagePart = null;
+            let responseText = "";
+
+            for (
+                const part of parts
+            ) {
+
                 if (
-                    typeof response.text ===
+                    part?.inlineData?.data
+                ) {
+
+                    imagePart =
+                        part.inlineData;
+                }
+
+                if (
+                    typeof part?.text ===
                     "string"
                 ) {
-                    answer =
-                        response.text.trim();
+
+                    responseText +=
+                        part.text;
                 }
-            } catch (error) {
-                console.error(
-                    "Response extraction error:",
-                    error?.message
+            }
+
+            if (!imagePart) {
+
+                return sendError(
+                    res,
+                    req,
+                    502,
+                    responseText.trim() ||
+                    "The AI model did not return an edited image."
                 );
             }
 
-            answer =
-                cleanResponse(
-                    answer
+            const extension =
+                imagePart.mimeType ===
+                "image/png"
+                    ? "png"
+                    : "jpg";
+
+            const fileName =
+                `mechsyntra-edit-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${extension}`;
+
+            const outputPath =
+                path.join(
+                    GENERATED_DIR,
+                    fileName
                 );
 
-            if (!answer) {
-                return res.status(502).json({
-                    success: false,
-                    error:
-                        "Gemini returned an empty response."
-                });
-            }
+            fs.writeFileSync(
+                outputPath,
+                Buffer.from(
+                    imagePart.data,
+                    "base64"
+                )
+            );
 
             return res.status(200).json({
+
                 success: true,
-                reply:
-                    answer
+
+                type:
+                    "image",
+
+                fileName,
+
+                url:
+                    `/generated/${fileName}`,
+
+                mimeType:
+                    imagePart.mimeType,
+
+                message:
+                    "Image edited successfully.",
+
+                requestId:
+                    req.requestId
             });
 
         } catch (error) {
 
             console.error(
-                "Unhandled /chat error:",
+                "[IMAGE ERROR]",
                 error
             );
 
-            return res.status(500).json({
-                success: false,
-                error:
-                    "MechSyntra AI server could not process the request."
-            });
+            return sendError(
+                res,
+                req,
+                500,
+                getFriendlyError(
+                    error
+                )
+            );
         }
     }
 );
 
 /* =========================================================
-   METHOD NOT ALLOWED
-========================================================= */
-
-app.use(
-    "/chat",
-    (req, res) => {
-        return res.status(405).json({
-            success: false,
-            error:
-                "Use POST /chat for AI messages."
-        });
-    }
-);
-
-/* =========================================================
-   UNKNOWN ROUTE
+   404
 ========================================================= */
 
 app.use(
     (req, res) => {
+
         return res.status(404).json({
+
             success: false,
+
             error:
-                "Endpoint not found."
+                "API endpoint not found.",
+
+            path:
+                req.originalUrl,
+
+            requestId:
+                req.requestId
         });
     }
 );
 
 /* =========================================================
-   SERVER
+   GLOBAL ERROR HANDLER
 ========================================================= */
 
-app.listen(
-    PORT,
-    "0.0.0.0",
+app.use(
+    (error, req, res, next) => {
+
+        console.error(
+            "[GLOBAL ERROR]",
+            error
+        );
+
+        if (
+            res.headersSent
+        ) {
+            return next(error);
+        }
+
+        return res.status(500).json({
+
+            success: false,
+
+            error:
+                NODE_ENV === "production"
+                    ? "Internal server error."
+                    : error?.message ||
+                      "Internal server error.",
+
+            requestId:
+                req.requestId
+        });
+    }
+);
+
+/* =========================================================
+   GRACEFUL SHUTDOWN
+========================================================= */
+
+const server =
+    app.listen(
+        PORT,
+        HOST,
+        () => {
+
+            console.log("");
+            console.log(
+                "╔══════════════════════════════════════════════╗"
+            );
+            console.log(
+                "║              MECHSYNTRA AI                  ║"
+            );
+            console.log(
+                "║        NEXT-GENERATION BACKEND              ║"
+            );
+            console.log(
+                "╚══════════════════════════════════════════════╝"
+            );
+
+            console.log(
+                `Environment : ${NODE_ENV}`
+            );
+
+            console.log(
+                `Version     : ${APP_VERSION}`
+            );
+
+            console.log(
+                `Server      : http://localhost:${PORT}`
+            );
+
+            console.log(
+                `Health      : http://localhost:${PORT}/health`
+            );
+
+            console.log(
+                `Ready       : http://localhost:${PORT}/ready`
+            );
+
+            console.log(
+                `Chat        : /api/v1/chat`
+            );
+
+            console.log(
+                `Assignment  : /api/v1/generate-assignment`
+            );
+
+            console.log(
+                `Documents   : /api/v1/generate-document`
+            );
+
+            console.log(
+                `Presentation: /api/v1/generate-presentation`
+            );
+
+            console.log(
+                `Image Edit  : /api/v1/edit-image`
+            );
+
+            console.log(
+                `Primary AI  : ${PRIMARY_MODEL}`
+            );
+
+            console.log(
+                `Fallback AI : ${FALLBACK_MODEL}`
+            );
+
+            console.log(
+                `Image AI    : ${IMAGE_MODEL}`
+            );
+
+            console.log(
+                "Status      : ONLINE"
+            );
+
+            console.log(
+                "══════════════════════════════════════════════"
+            );
+            console.log("");
+        }
+    );
+
+/* =========================================================
+   PROCESS SAFETY
+========================================================= */
+
+process.on(
+    "SIGTERM",
     () => {
 
-        console.log("");
         console.log(
-            "========================================"
+            "[SYSTEM] SIGTERM received. Shutting down..."
         );
+
+        server.close(() => {
+
+            console.log(
+                "[SYSTEM] Server closed."
+            );
+
+            process.exit(0);
+        });
+    }
+);
+
+process.on(
+    "SIGINT",
+    () => {
+
         console.log(
-            "          MECHSYNTRA AI BACKEND"
+            "[SYSTEM] SIGINT received. Shutting down..."
         );
-        console.log(
-            "========================================"
+
+        server.close(() => {
+
+            console.log(
+                "[SYSTEM] Server closed."
+            );
+
+            process.exit(0);
+        });
+    }
+);
+
+process.on(
+    "unhandledRejection",
+    error => {
+
+        console.error(
+            "[FATAL] Unhandled promise rejection:",
+            error
         );
-        console.log(
-            `Local  : http://localhost:${PORT}`
+    }
+);
+
+process.on(
+    "uncaughtException",
+    error => {
+
+        console.error(
+            "[FATAL] Uncaught exception:",
+            error
         );
-        console.log(
-            `Health : http://localhost:${PORT}/health`
-        );
-        console.log(
-            `Chat   : http://localhost:${PORT}/chat`
-        );
-        console.log(
-            `Docs   : http://localhost:${PORT}/generate-document`
-        );
-        console.log(
-            `Assignment : http://localhost:${PORT}/generate-assignment`
-        );
-        console.log(
-            `Primary: ${PRIMARY_MODEL}`
-        );
-        console.log(
-            `Backup : ${FALLBACK_MODEL}`
-        );
-        console.log(
-            "Media  : IMAGE / AUDIO / PDF / TEXT"
-        );
-        console.log(
-            "Documents : WORD / PDF"
-        );
-        console.log(
-            "Status : ONLINE"
-        );
-        console.log(
-            "========================================"
-        );
-        console.log("");
+
+        process.exit(1);
     }
 );
