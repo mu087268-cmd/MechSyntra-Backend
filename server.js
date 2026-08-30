@@ -1,2653 +1,2392 @@
-"use strict";
+'use strict';
 
-const express = require("express");
-const cors = require("cors");
-const dotenv = require("dotenv");
-const path = require("path");
-const fs = require("fs");
-const crypto = require("crypto");
-const { GoogleGenAI } = require("@google/genai");
+/*
+============================================================
+ MECHSYNTRA AI BACKEND
+============================================================
 
-dotenv.config();
+Purpose:
+- Main AI chat
+- Conversation memory
+- Context-aware intent continuation
+- Presentation generation
+- Assignment generation
+- Document generation
+- Multimodal text/image/audio/PDF input
+- Project Manager / Project Copilot context
+- Gemini primary + backup model
+- Health endpoint
+- CORS
+- Safe error handling
+- No Git conflict markers
+============================================================
+*/
+
+require('dotenv').config();
+
+const express = require('express');
+const cors = require('cors');
+const crypto = require('crypto');
+
+const {
+    GoogleGenAI
+} = require('@google/genai');
 
 /* =========================================================
-   APP CONFIGURATION
+   CONFIGURATION
 ========================================================= */
 
 const app = express();
 
-const PORT = Number(process.env.PORT) || 3000;
-<<<<<<< HEAD
-const HOST = process.env.HOST || "0.0.0.0";
-=======
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-
-const NODE_ENV =
-    process.env.NODE_ENV || "development";
-
-const APP_NAME = "MechSyntra AI";
-const APP_VERSION = "1.0.0";
+const PORT = Number(process.env.PORT || 3000);
 
 const GEMINI_API_KEY =
-    process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY ||
+    process.env.GOOGLE_API_KEY ||
+    '';
 
 const PRIMARY_MODEL =
-    process.env.PRIMARY_MODEL ||
-    "gemini-3.6-flash";
+    process.env.GEMINI_PRIMARY_MODEL ||
+    'gemini-3.6-flash';
 
-const FALLBACK_MODEL =
-    process.env.FALLBACK_MODEL ||
-    "gemini-3.5-flash-lite";
-
-const IMAGE_MODEL =
-    process.env.IMAGE_MODEL ||
-    "gemini-2.5-flash-image";
-
-const MAX_BODY_SIZE =
-    process.env.MAX_BODY_SIZE || "25mb";
-
-const MAX_MESSAGE_LENGTH = 20000;
+const BACKUP_MODEL =
+    process.env.GEMINI_BACKUP_MODEL ||
+    'gemini-3.5-flash-lite';
 
 const MAX_HISTORY_MESSAGES =
-    Number(process.env.MAX_HISTORY_MESSAGES) || 30;
+    Number(process.env.MAX_HISTORY_MESSAGES || 30);
 
-const MAX_MEDIA_BASE64_LENGTH =
-    18 * 1024 * 1024;
+const MAX_CONTEXT_MESSAGES =
+    Number(process.env.MAX_CONTEXT_MESSAGES || 18);
 
-const GENERATED_DIR =
-    path.join(__dirname, "generated");
+const MAX_MESSAGE_LENGTH =
+    Number(process.env.MAX_MESSAGE_LENGTH || 30000);
 
-/* =========================================================
-   STARTUP VALIDATION
-========================================================= */
+const REQUEST_TIMEOUT =
+    Number(process.env.REQUEST_TIMEOUT || 120000);
 
-if (!GEMINI_API_KEY) {
-<<<<<<< HEAD
-    console.error(
-        "[FATAL] GEMINI_API_KEY is missing."
-    );
-
-=======
-    console.error("");
-    console.error("========================================");
-    console.error("       MECHSYNTRA AI BACKEND ERROR");
-    console.error("========================================");
-    console.error("GEMINI_API_KEY is missing.");
-    console.error("Check your .env file.");
-    console.error("========================================");
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-    process.exit(1);
-}
-
-if (!fs.existsSync(GENERATED_DIR)) {
-    fs.mkdirSync(
-        GENERATED_DIR,
-        { recursive: true }
-    );
-}
+const MAX_SESSIONS =
+    Number(process.env.MAX_SESSIONS || 1000);
 
 /* =========================================================
-   AI CLIENT
+   GEMINI CLIENT
 ========================================================= */
 
-const ai = new GoogleGenAI({
-    apiKey: GEMINI_API_KEY
-});
-
-/* =========================================================
-<<<<<<< HEAD
-   SECURITY
-=======
-   EXPRESS
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-========================================================= */
-
-const allowedOrigins =
-    process.env.ALLOWED_ORIGINS
-        ? process.env.ALLOWED_ORIGINS
-            .split(",")
-            .map(origin => origin.trim())
-            .filter(Boolean)
-        : ["*"];
-
-app.use(
-    cors({
-        origin: (origin, callback) => {
-
-            if (
-                allowedOrigins.includes("*") ||
-                !origin
-            ) {
-                return callback(null, true);
-            }
-
-            if (
-                allowedOrigins.includes(origin)
-            ) {
-                return callback(null, true);
-            }
-
-            return callback(
-                new Error(
-                    "CORS origin not allowed."
-                )
-            );
-        },
-
-        methods: [
-            "GET",
-            "POST",
-            "OPTIONS"
-        ],
-
-        allowedHeaders: [
-            "Content-Type",
-            "Accept",
-            "Authorization",
-            "X-Request-ID"
-        ],
-
-        credentials: true
+const ai = GEMINI_API_KEY
+    ? new GoogleGenAI({
+        apiKey: GEMINI_API_KEY
     })
-);
+    : null;
 
 /* =========================================================
-   SECURITY HEADERS
+   MIDDLEWARE
 ========================================================= */
 
-app.disable("x-powered-by");
+app.use(cors({
+    origin: true,
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+}));
 
-app.use((req, res, next) => {
+app.use(express.json({
+    limit: '25mb'
+}));
 
-    res.setHeader(
-        "X-Content-Type-Options",
-        "nosniff"
-    );
+app.use(express.urlencoded({
+    extended: true,
+    limit: '25mb'
+}));
 
-    res.setHeader(
-        "X-Frame-Options",
-        "DENY"
-    );
-
-    res.setHeader(
-        "Referrer-Policy",
-        "no-referrer"
-    );
-
-    res.setHeader(
-        "Permissions-Policy",
-        "camera=(), microphone=()"
-    );
-
-    next();
-});
+app.disable('x-powered-by');
 
 /* =========================================================
-   REQUEST ID
-========================================================= */
+   IN-MEMORY CONVERSATION STORE
+=========================================================
 
-app.use((req, res, next) => {
+This is intentionally simple.
 
-    const incoming =
-        req.headers["x-request-id"];
+For production persistence, connect this layer to:
+- Room via Android client
+- PostgreSQL
+- MongoDB
+- Redis
+- Firebase
+- Supabase
 
-    const requestId =
-        typeof incoming === "string" &&
-        incoming.length <= 100
-            ? incoming
-            : crypto.randomUUID();
+The API structure remains the same.
+*/
 
-    req.requestId = requestId;
-
-    res.setHeader(
-        "X-Request-ID",
-        requestId
-    );
-
-    next();
-});
+const conversations = new Map();
 
 /* =========================================================
-   REQUEST LOGGER
+   UTILITY FUNCTIONS
 ========================================================= */
 
-app.use((req, res, next) => {
+function makeId(prefix = 'id') {
+    return `${prefix}_${crypto.randomUUID()}`;
+}
 
-    const start =
-        process.hrtime.bigint();
+function nowISO() {
+    return new Date().toISOString();
+}
 
-    res.on("finish", () => {
-
-        const duration =
-            Number(
-                process.hrtime.bigint() -
-                start
-            ) / 1e6;
-
-        console.log(
-            `[HTTP] ${req.method} ${req.originalUrl} ` +
-            `${res.statusCode} ${duration.toFixed(2)}ms ` +
-            `[${req.requestId}]`
-        );
-    });
-
-    next();
-});
-
-/* =========================================================
-   RATE LIMITER
-========================================================= */
-
-const rateLimitStore =
-    new Map();
-
-const RATE_LIMIT_WINDOW =
-    60 * 1000;
-
-const RATE_LIMIT_MAX =
-    Number(
-        process.env.RATE_LIMIT_MAX
-    ) || 60;
-
-function rateLimiter(req, res, next) {
-
-    const key =
-        req.ip || "unknown";
-
-    const now =
-        Date.now();
-
-    const existing =
-        rateLimitStore.get(key);
-
-    if (
-        !existing ||
-        now - existing.start >
-        RATE_LIMIT_WINDOW
-    ) {
-
-        rateLimitStore.set(key, {
-            start: now,
-            count: 1
-        });
-
-        return next();
+function safeString(value, fallback = '') {
+    if (value === undefined || value === null) {
+        return fallback;
     }
 
-    existing.count++;
-
-    if (
-        existing.count >
-        RATE_LIMIT_MAX
-    ) {
-
-        return res.status(429).json({
-
-            success: false,
-
-            error:
-                "Too many requests. Please try again shortly.",
-
-            requestId:
-                req.requestId
-        });
-    }
-
-    next();
+    return String(value);
 }
 
-app.use(rateLimiter);
+function cleanText(value, maxLength = MAX_MESSAGE_LENGTH) {
+    return safeString(value)
+        .replace(/\u0000/g, '')
+        .slice(0, maxLength)
+        .trim();
+}
+
+function isObject(value) {
+    return (
+        value !== null &&
+        typeof value === 'object' &&
+        !Array.isArray(value)
+    );
+}
+
+function getSessionId(body) {
+    return (
+        cleanText(body?.conversationId, 200) ||
+        cleanText(body?.sessionId, 200) ||
+        cleanText(body?.chatId, 200) ||
+        makeId('conversation')
+    );
+}
 
 /* =========================================================
-   BODY PARSING
+   SESSION MANAGEMENT
 ========================================================= */
 
-app.use(
-    express.json({
-        limit: MAX_BODY_SIZE
-    })
-);
+function createConversation(id) {
+    const conversation = {
+        id,
 
-app.use(
-    express.urlencoded({
-        extended: true,
-        limit: MAX_BODY_SIZE
-    })
-);
+        createdAt: nowISO(),
 
-/* =========================================================
-   GENERATED FILES
-========================================================= */
+        updatedAt: nowISO(),
 
-app.use(
-    "/generated",
-    express.static(
-        GENERATED_DIR,
-        {
-            maxAge:
-                NODE_ENV === "production"
-                    ? "1h"
-                    : 0,
+        title: 'New Conversation',
 
-            index: false
+        messages: [],
+
+        state: {
+            currentIntent: null,
+
+            currentTask: null,
+
+            currentSubTask: null,
+
+            waitingFor: null,
+
+            conversationGoal: null,
+
+            lastAIQuestion: null,
+
+            lastUserMessage: null,
+
+            lastAIMessage: null,
+
+            collectedInformation: {},
+
+            missingInformation: [],
+
+            projectContext: {},
+
+            artifact: null,
+
+            activeWorkflow: null
         }
-    )
-);
+    };
+
+    conversations.set(id, conversation);
+
+    trimSessions();
+
+    return conversation;
+}
+
+function getConversation(id) {
+    if (!conversations.has(id)) {
+        return createConversation(id);
+    }
+
+    return conversations.get(id);
+}
+
+function trimSessions() {
+    if (conversations.size <= MAX_SESSIONS) {
+        return;
+    }
+
+    const entries = [...conversations.entries()]
+        .sort((a, b) => {
+            return (
+                new Date(a[1].updatedAt).getTime() -
+                new Date(b[1].updatedAt).getTime()
+            );
+        });
+
+    while (conversations.size > MAX_SESSIONS) {
+        const first = entries.shift();
+
+        if (!first) {
+            break;
+        }
+
+        conversations.delete(first[0]);
+    }
+}
+
+function touchConversation(conversation) {
+    conversation.updatedAt = nowISO();
+}
 
 /* =========================================================
-   SYSTEM INSTRUCTION
+   MESSAGE MANAGEMENT
+========================================================= */
+
+function addMessage(
+    conversation,
+    role,
+    content,
+    metadata = {}
+) {
+    const message = {
+        id: makeId('msg'),
+
+        role,
+
+        content: cleanText(content),
+
+        createdAt: nowISO(),
+
+        ...metadata
+    };
+
+    conversation.messages.push(message);
+
+    if (
+        conversation.messages.length >
+        MAX_HISTORY_MESSAGES
+    ) {
+        conversation.messages =
+            conversation.messages.slice(
+                -MAX_HISTORY_MESSAGES
+            );
+    }
+
+    touchConversation(conversation);
+
+    return message;
+}
+
+function getRecentMessages(conversation) {
+    return conversation.messages.slice(
+        -MAX_CONTEXT_MESSAGES
+    );
+}
+
+/* =========================================================
+   CONVERSATION TITLE
+========================================================= */
+
+function generateConversationTitle(text) {
+    const cleaned = cleanText(text, 120);
+
+    if (!cleaned) {
+        return 'New Conversation';
+    }
+
+    const lower = cleaned.toLowerCase();
+
+    if (
+        lower.includes('presentation')
+    ) {
+        return 'Presentation';
+    }
+
+    if (
+        lower.includes('assignment')
+    ) {
+        return 'Assignment';
+    }
+
+    if (
+        lower.includes('project')
+    ) {
+        return 'Project';
+    }
+
+    if (
+        lower.includes('research')
+    ) {
+        return 'Research';
+    }
+
+    if (
+        lower.includes('report')
+    ) {
+        return 'Report';
+    }
+
+    const words = cleaned
+        .split(/\s+/)
+        .slice(0, 6);
+
+    return words.join(' ');
+}
+
+/* =========================================================
+   INTENT DETECTION
+========================================================= */
+
+function detectIntent(text) {
+    const value = cleanText(text).toLowerCase();
+
+    if (!value) {
+        return 'general_chat';
+    }
+
+    if (
+        /\b(generate|create|make|prepare|build)\b/.test(value) &&
+        /\b(presentation|ppt|slides|powerpoint)\b/.test(value)
+    ) {
+        return 'generate_presentation';
+    }
+
+    if (
+        /\b(generate|create|make|prepare)\b/.test(value) &&
+        /\b(assignment|homework)\b/.test(value)
+    ) {
+        return 'generate_assignment';
+    }
+
+    if (
+        /\b(generate|create|make|prepare)\b/.test(value) &&
+        /\b(report|document|docx|word|pdf)\b/.test(value)
+    ) {
+        return 'generate_document';
+    }
+
+    if (
+        /\b(research|research paper|papers|literature review)\b/.test(value)
+    ) {
+        return 'research';
+    }
+
+    if (
+        /\b(project manager|project copilot|project)\b/.test(value)
+    ) {
+        return 'project_copilot';
+    }
+
+    if (
+        /\b(image|photo|picture)\b/.test(value) &&
+        /\b(edit|change|modify|remove|add)\b/.test(value)
+    ) {
+        return 'image_editing';
+    }
+
+    if (
+        /\b(code|coding|program|programming|debug|error)\b/.test(value)
+    ) {
+        return 'coding';
+    }
+
+    return 'general_chat';
+}
+
+/* =========================================================
+   WORKFLOW DETECTION
+========================================================= */
+
+function detectWorkflow(text) {
+    const value = cleanText(text).toLowerCase();
+
+    if (
+        /\b(presentation|ppt|slides|powerpoint)\b/.test(value)
+    ) {
+        return 'presentation';
+    }
+
+    if (
+        /\b(assignment|homework)\b/.test(value)
+    ) {
+        return 'assignment';
+    }
+
+    if (
+        /\b(report|document|word|pdf)\b/.test(value)
+    ) {
+        return 'document';
+    }
+
+    if (
+        /\b(research|research paper|literature)\b/.test(value)
+    ) {
+        return 'research';
+    }
+
+    if (
+        /\b(project)\b/.test(value)
+    ) {
+        return 'project';
+    }
+
+    return null;
+}
+
+/* =========================================================
+   PREVIOUS QUESTION ANALYSIS
+========================================================= */
+
+function detectQuestionTarget(question) {
+    const value = cleanText(question).toLowerCase();
+
+    if (
+        /\b(topic|subject|title)\b/.test(value)
+    ) {
+        return 'topic';
+    }
+
+    if (
+        /\b(number of slides|how many slides|slides)\b/.test(value)
+    ) {
+        return 'slideCount';
+    }
+
+    if (
+        /\b(language)\b/.test(value)
+    ) {
+        return 'language';
+    }
+
+    if (
+        /\b(audience|who is.*for)\b/.test(value)
+    ) {
+        return 'audience';
+    }
+
+    if (
+        /\b(name)\b/.test(value)
+    ) {
+        return 'name';
+    }
+
+    if (
+        /\b(class|grade|semester)\b/.test(value)
+    ) {
+        return 'class';
+    }
+
+    if (
+        /\b(subject)\b/.test(value)
+    ) {
+        return 'subject';
+    }
+
+    if (
+        /\b(objective|goal)\b/.test(value)
+    ) {
+        return 'objective';
+    }
+
+    return null;
+}
+
+/* =========================================================
+   SHORT ANSWER RESOLUTION
+========================================================= */
+
+function resolveShortAnswer(
+    userText,
+    conversation
+) {
+    const state = conversation.state;
+
+    if (!state.waitingFor) {
+        return null;
+    }
+
+    const answer = cleanText(userText);
+
+    if (!answer) {
+        return null;
+    }
+
+    const target =
+        state.waitingFor ||
+        detectQuestionTarget(
+            state.lastAIQuestion || ''
+        );
+
+    if (!target) {
+        return null;
+    }
+
+    const values = {
+        topic: answer,
+
+        slideCount: answer,
+
+        language: answer,
+
+        audience: answer,
+
+        name: answer,
+
+        class: answer,
+
+        subject: answer,
+
+        objective: answer
+    };
+
+    if (!(target in values)) {
+        return null;
+    }
+
+    state.collectedInformation[target] =
+        values[target];
+
+    state.missingInformation =
+        state.missingInformation.filter(
+            item => item !== target
+        );
+
+    state.waitingFor = null;
+
+    return {
+        target,
+
+        value: answer
+    };
+}
+
+/* =========================================================
+   PROJECT CONTEXT EXTRACTION
+========================================================= */
+
+function extractProjectContext(text) {
+    const result = {};
+
+    const value = cleanText(text);
+
+    const projectPatterns = [
+        /project\s*(?:is|called|name)?\s*[:\-]?\s*(.+)$/i,
+        /i(?:'m| am)\s+(?:building|making|creating)\s+(.+)$/i,
+        /i want to (?:build|make|create)\s+(.+)$/i
+    ];
+
+    for (const pattern of projectPatterns) {
+        const match = value.match(pattern);
+
+        if (match && match[1]) {
+            result.projectName =
+                cleanText(match[1], 300);
+
+            break;
+        }
+    }
+
+    return result;
+}
+
+/* =========================================================
+   CONTEXT UPDATE
+========================================================= */
+
+function updateConversationState(
+    conversation,
+    userText
+) {
+    const state = conversation.state;
+
+    const intent =
+        detectIntent(userText);
+
+    const workflow =
+        detectWorkflow(userText);
+
+    const previousIntent =
+        state.currentIntent;
+
+    /*
+     * First priority:
+     * Is this an answer to the previous AI question?
+     */
+    const resolved =
+        resolveShortAnswer(
+            userText,
+            conversation
+        );
+
+    if (resolved) {
+        state.lastUserMessage = userText;
+
+        return {
+            intent:
+                previousIntent ||
+                intent,
+
+            workflow:
+                state.activeWorkflow ||
+                workflow,
+
+            resolvedAnswer: resolved,
+
+            isContinuation: true
+        };
+    }
+
+    /*
+     * Detect explicit new intent.
+     */
+    if (
+        intent !== 'general_chat'
+    ) {
+        state.currentIntent = intent;
+    }
+
+    if (workflow) {
+        state.activeWorkflow = workflow;
+    }
+
+    /*
+     * Project context.
+     */
+    const project =
+        extractProjectContext(userText);
+
+    if (
+        project.projectName
+    ) {
+        state.projectContext = {
+            ...state.projectContext,
+            ...project
+        };
+    }
+
+    state.lastUserMessage = userText;
+
+    return {
+        intent:
+            state.currentIntent ||
+            intent,
+
+        workflow:
+            state.activeWorkflow ||
+            workflow,
+
+        resolvedAnswer: null,
+
+        isContinuation:
+            Boolean(
+                previousIntent &&
+                intent === 'general_chat'
+            )
+    };
+}
+
+/* =========================================================
+   CONTEXT SUMMARY
+========================================================= */
+
+function buildContextSummary(
+    conversation
+) {
+    const state =
+        conversation.state;
+
+    const project =
+        state.projectContext || {};
+
+    const info =
+        state.collectedInformation || {};
+
+    return {
+        conversationId:
+            conversation.id,
+
+        currentIntent:
+            state.currentIntent,
+
+        currentTask:
+            state.currentTask,
+
+        currentSubTask:
+            state.currentSubTask,
+
+        activeWorkflow:
+            state.activeWorkflow,
+
+        waitingFor:
+            state.waitingFor,
+
+        conversationGoal:
+            state.conversationGoal,
+
+        collectedInformation:
+            info,
+
+        missingInformation:
+            state.missingInformation,
+
+        projectContext:
+            project,
+
+        lastAIQuestion:
+            state.lastAIQuestion,
+
+        lastUserMessage:
+            state.lastUserMessage
+    };
+}
+
+/* =========================================================
+   AI SYSTEM INSTRUCTION
 ========================================================= */
 
 const SYSTEM_INSTRUCTION = `
 You are MechSyntra AI.
 
-Founder:
-Usman Choudhary
+You are an intelligent conversational assistant and project copilot.
 
-You are a professional general-purpose AI assistant
-with strong capabilities in engineering, education,
-research, programming, documents and productivity.
+IMPORTANT CONVERSATION RULE:
 
-<<<<<<< HEAD
-CONVERSATION MEMORY:
+Never treat every user message as a completely new request.
 
-Treat the supplied history as the same continuous conversation.
+Understand the conversation as a continuous interaction.
 
-Use previous messages to understand:
+If you previously asked the user a question and the user replies with a short answer, interpret that answer as the answer to your previous question.
 
-- Context
-- Pending requests
-- User intent
-- Previous answers
-- Topics
-- File/document requests
-- Presentation requests
+Example:
+
+User:
+Generate a presentation.
+
+Assistant:
+What is the topic?
+
+User:
+Artificial Intelligence.
+
+Correct interpretation:
+The user has supplied the presentation topic.
+
+Do NOT ask:
+"How can I help you with Artificial Intelligence?"
+
+Instead continue the presentation workflow.
+
+Another example:
+
+Assistant:
+How many slides?
+
+User:
+10
+
+Interpret:
+slideCount = 10.
+
+Another example:
+
+Assistant:
+Who is the audience?
+
+User:
+University students.
+
+Interpret:
+audience = university students.
+
+Never make the user repeat information unnecessarily.
+
+============================================================
+INTENT CONTINUATION
+============================================================
+
+Always determine:
+
+1. What the user originally wanted
+2. What task is active
+3. What question the assistant asked
+4. What information the user just supplied
+5. What information is still missing
+6. What the next logical action is
+
+The latest explicit user instruction has priority over older information.
+
+============================================================
+PROJECT CONTEXT
+============================================================
+
+If the user is inside an AI Project Manager project, use that project's context.
 
 If the user says:
 
-"yes"
-"okay"
+"my project"
+
+"this project"
+
+"it"
+
+"this"
+
+"that component"
+
+"same topic"
+
 "continue"
+
 "do it"
-"make it"
+
 "generate it"
-"same"
-"this one"
 
-interpret the message using the previous conversation.
+resolve these references using the current conversation and project context.
 
-Do not unnecessarily ask the user to repeat information
-already established in the conversation.
+Do not unnecessarily ask the user to repeat the project name.
 
-LANGUAGE:
+============================================================
+NEW TOPIC
+============================================================
 
-Detect the user's language.
+If the user clearly starts an unrelated topic, answer that new topic normally.
 
-Normally respond in the same language.
+Do not force unrelated questions into the current workflow.
+
+============================================================
+PRESENTATIONS
+============================================================
+
+If the user requests presentation generation and enough information is available, generate presentation-ready slide content.
+
+Do not merely explain how to make the presentation.
+
+If the topic was supplied as an answer to a previous question, use it automatically.
+
+============================================================
+ASSIGNMENTS
+============================================================
+
+If assignment generation is requested, generate the actual assignment content when enough information is available.
+
+============================================================
+DOCUMENTS
+============================================================
+
+If a document/report is requested, produce structured document-ready content.
+
+Never claim that a physical file was created unless the server actually created it.
+
+============================================================
+FACTUAL ACCURACY
+============================================================
+
+Do not invent:
+
+- citations
+- papers
+- URLs
+- prices
+- specifications
+- experimental results
+- measurements
+- research findings
+
+Clearly distinguish assumptions from verified information.
+
+============================================================
+LANGUAGE
+============================================================
+
+Respond in the user's language when possible.
 
 Support:
-- English
-- Urdu
-- Roman Urdu
-- Other supported languages
+English
+Urdu
+Roman Urdu
+Hindi
+and other supported languages.
 
-If the user explicitly requests a language,
-follow that request.
+============================================================
+STYLE
+============================================================
 
-GENERAL:
+Be professional.
 
-- Be accurate.
-- Do not invent facts.
-- Do not fabricate sources.
-- Do not claim a file was generated unless the application
-  actually generated it.
-- Keep simple responses concise.
-- Give detailed answers when necessary.
+Be direct.
 
-MEDIA:
+Avoid unnecessary repetition.
 
-Only analyze media that is actually supplied.
+Use structured answers when useful.
 
-Never pretend that an attachment was inspected when
-no attachment exists.
-
-CODING:
-
-Provide practical and correct code.
-
-ENGINEERING:
-
-Be technically careful.
-
-Separate:
-- Known information
-- Assumptions
-- Recommendations
-
-Never invent measurements, calculations,
-experimental results or engineering test data.
-
-DOCUMENTS:
-
-When the application provides a document-generation endpoint,
-return structured content appropriate for that document.
-
-PRESENTATIONS:
-
-When presentation generation is requested,
-produce presentation-ready slide content rather than
-a normal explanatory answer.
-
-CHAT:
-
-Respond naturally and directly.
-
-Do not output JSON unless the endpoint specifically requires it.
-=======
-LANGUAGE:
-- Reply normally in the user's language.
-- Support English, Urdu and Roman Urdu.
-- If the user explicitly requests a language, follow it.
-- If the user says Roman Urdu, use Roman Urdu.
-- Do not unnecessarily switch languages.
-
-GENERAL:
-- Give accurate and useful answers.
-- Do not invent facts.
-- Do not claim an action was completed unless it was actually completed.
-- Keep simple questions concise.
-- Give detailed answers when required.
-
-MEDIA:
-- Analyze supplied images, PDFs, audio and text when supported.
-- Never pretend that an attachment was inspected if it was not supplied.
-- Never invent information from attachments.
-
-ASSIGNMENTS:
-- Create complete academic assignments when requested.
-- Include a suitable title.
-- Include Introduction.
-- Include relevant sections and subtopics.
-- Include examples where useful.
-- Include Conclusion.
-- Include References only when reliable references are available.
-- Never fabricate citations, studies or statistics.
-- Follow the requested language and educational level.
-
-DOCUMENTS:
-- Word/DOCX and PDF generation is supported by the backend.
-- The backend generates the actual files.
-
-RESPONSE:
-- Use clean readable text.
-- Do not use unnecessary Markdown.
-- Do not return JSON as the normal AI answer.
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
+Do not output JSON unless explicitly requested.
 `;
 
 /* =========================================================
-   HELPERS
+   GEMINI CONTENT HELPERS
 ========================================================= */
 
-function normalizeMimeType(value) {
-
-    if (
-        typeof value !== "string"
-    ) {
-        return "";
-    }
-
-    return value
-        .split(";")[0]
-        .trim()
-        .toLowerCase();
-}
-
-function stripDataUrlPrefix(value) {
-
-    if (
-        typeof value !== "string"
-    ) {
-        return "";
-    }
-
-    const comma =
-        value.indexOf(",");
-
-    if (
-        value.startsWith("data:") &&
-        comma !== -1
-    ) {
-        return value
-            .slice(comma + 1)
-            .trim();
-    }
-
-    return value.trim();
-}
-
-function looksLikeBase64(value) {
-
-    if (
-        typeof value !== "string"
-    ) {
-        return false;
-    }
-
-    const clean =
-        stripDataUrlPrefix(value);
-
-    if (!clean) {
-        return false;
-    }
-
-    if (
-        clean.length >
-        MAX_MEDIA_BASE64_LENGTH
-    ) {
-        return false;
-    }
-
-    return /^[A-Za-z0-9+/=\s]+$/
-        .test(clean);
-}
-
-function isSupportedMediaMime(
-    mimeType
+function buildTextPrompt(
+    userText,
+    conversation
 ) {
+    const context =
+        buildContextSummary(
+            conversation
+        );
 
-    if (!mimeType) {
-        return false;
-    }
+    const recent =
+        getRecentMessages(
+            conversation
+        );
 
-    if (
-        mimeType.startsWith("image/")
-    ) {
-        return true;
-    }
+    const recentText =
+        recent
+            .map(message => {
+                return `${message.role.toUpperCase()}: ${message.content}`;
+            })
+            .join('\n');
 
-    if (
-        mimeType.startsWith("audio/")
-    ) {
-        return true;
-    }
+    return `
+CURRENT MECHSYNTRA CONTEXT:
 
-    if (
-        mimeType ===
-        "application/pdf"
-    ) {
-        return true;
-    }
+${JSON.stringify(
+        context,
+        null,
+        2
+    )}
 
-    return [
-        "text/plain",
-        "text/csv",
-        "text/html",
-        "text/css",
-        "text/markdown",
-        "text/xml",
-        "application/json",
-        "application/rtf"
-    ].includes(mimeType);
-}
+RECENT CONVERSATION:
 
-<<<<<<< HEAD
-=======
-function stripDataUrlPrefix(base64) {
-    if (typeof base64 !== "string") {
-        return "";
-    }
+${recentText}
 
-    const commaIndex = base64.indexOf(",");
+LATEST USER MESSAGE:
 
-    if (
-        base64.startsWith("data:") &&
-        commaIndex >= 0
-    ) {
-        return base64
-            .slice(commaIndex + 1)
-            .trim();
-    }
+${userText}
 
-    return base64.trim();
-}
+IMPORTANT:
 
-function looksLikeBase64(value) {
-    if (typeof value !== "string") {
-        return false;
-    }
+Resolve the latest user message using the previous conversation before deciding what it means.
 
-    const clean = stripDataUrlPrefix(value);
+If it is an answer to a previous AI question, use it as the answer.
 
-    if (
-        !clean ||
-        clean.length > MAX_MEDIA_BASE64_LENGTH
-    ) {
-        return false;
-    }
+If the user has now supplied enough information to perform the requested task, perform the task instead of asking the user to repeat the original request.
 
-    return /^[A-Za-z0-9+/=\s]+$/.test(clean);
-}
-
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-function createInlineDataPart(
-    mimeType,
-    base64
-) {
-
-    return {
-        inlineData: {
-            mimeType,
-<<<<<<< HEAD
-            data:
-                stripDataUrlPrefix(
-                    base64
-                )
-=======
-            data: stripDataUrlPrefix(base64Data)
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-        }
-    };
+If information is still genuinely missing, ask only the next necessary question.
+`;
 }
 
 /* =========================================================
-   HISTORY
+   TIMEOUT
 ========================================================= */
 
-function normalizeHistory(
-    history
+async function withTimeout(
+    promise,
+    milliseconds
 ) {
+    let timeout;
 
-    if (
-        !Array.isArray(history)
-    ) {
-        return [];
-    }
-
-    return history
-        .slice(-MAX_HISTORY_MESSAGES)
-        .map(item => {
-
-            const role =
-                item?.role === "model" ||
-                item?.role === "assistant"
-                    ? "model"
-                    : "user";
-
-            const text =
-                typeof item?.text === "string"
-                    ? item.text.trim()
-                    : typeof item?.message === "string"
-                        ? item.message.trim()
-                        : typeof item?.content === "string"
-                            ? item.content.trim()
-                            : "";
-
-            if (!text) {
-                return null;
-            }
-
-            return {
-                role,
-                parts: [
-                    {
-                        text
-                    }
-                ]
-            };
-        })
-        .filter(Boolean);
-}
-
-function buildConversationContents(
-    message,
-    history = [],
-    media = null
-) {
-
-    const contents = [];
-
-    const normalizedHistory =
-        normalizeHistory(history);
-
-    contents.push(
-        ...normalizedHistory
-    );
-
-    const currentParts = [];
-
-    if (
-        typeof message === "string" &&
-        message.trim()
-    ) {
-
-        currentParts.push({
-            text: message.trim()
+    const timeoutPromise =
+        new Promise((_, reject) => {
+            timeout = setTimeout(() => {
+                reject(
+                    new Error(
+                        'AI request timed out.'
+                    )
+                );
+            }, milliseconds);
         });
+
+    try {
+        return await Promise.race([
+            promise,
+            timeoutPromise
+        ]);
+    } finally {
+        clearTimeout(timeout);
     }
-
-    if (
-        media?.base64 &&
-        media?.mimeType
-    ) {
-
-        currentParts.push(
-            createInlineDataPart(
-                media.mimeType,
-                media.base64
-            )
-        );
-    }
-
-    if (
-        currentParts.length === 0
-    ) {
-
-        throw new Error(
-            "Message or media is required."
-        );
-    }
-
-    contents.push({
-        role: "user",
-        parts: currentParts
-    });
-
-    return contents;
 }
 
 /* =========================================================
-   MEDIA
-========================================================= */
-
-function getMediaFromBody(
-    body
-) {
-
-    const base64 =
-        typeof body?.mediaBase64 === "string"
-            ? body.mediaBase64
-            : typeof body?.imageBase64 === "string"
-                ? body.imageBase64
-                : typeof body?.fileBase64 === "string"
-                    ? body.fileBase64
-                    : "";
-
-    if (!base64) {
-        return null;
-    }
-
-<<<<<<< HEAD
-    const mimeType =
-        normalizeMimeType(
-            body?.mimeType ||
-            body?.mediaMimeType ||
-            "image/jpeg"
-=======
-    if (mediaBase64) {
-        if (!mimeType) {
-            throw new Error(
-                "MIME type is required when a file is attached."
-            );
-        }
-
-        if (!isSupportedMediaMime(mimeType)) {
-            throw new Error(
-                `Unsupported media type: ${mimeType}`
-            );
-        }
-
-        if (!looksLikeBase64(mediaBase64)) {
-            throw new Error(
-                "Invalid or oversized base64 media data."
-            );
-        }
-
-        if (fileName) {
-            parts.push({
-                text: `Attached file name: ${fileName}`
-            });
-        }
-
-        parts.push(
-            createInlineDataPart(
-                mimeType,
-                mediaBase64
-            )
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-        );
-
-    if (
-        !isSupportedMediaMime(
-            mimeType
-        )
-    ) {
-
-        throw new Error(
-            `Unsupported media type: ${mimeType}`
-        );
-    }
-
-    if (
-        !looksLikeBase64(
-            base64
-        )
-    ) {
-
-        throw new Error(
-            "Invalid or oversized media data."
-        );
-    }
-
-    return {
-        base64,
-        mimeType
-    };
-}
-
-<<<<<<< HEAD
-/* =========================================================
-   ERROR HANDLING
-========================================================= */
-
-function getErrorStatus(
-    error
-) {
-
-    const value =
-=======
-function getErrorStatus(error) {
-    const status =
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-        error?.status ??
-        error?.code ??
-        error?.response?.status ??
-        500;
-
-<<<<<<< HEAD
-    const status =
-        Number(value);
-
-    return Number.isFinite(status)
-        ? status
-=======
-    const numberStatus = Number(status);
-
-    return Number.isFinite(numberStatus)
-        ? numberStatus
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-        : 500;
-}
-
-function getFriendlyError(
-    error
-) {
-
-    const status =
-        getErrorStatus(error);
-
-    console.error(
-        "[AI ERROR]",
-        error?.message || error
-    );
-
-    switch (status) {
-
-<<<<<<< HEAD
-        case 400:
-            return "The request was invalid. Please check your message or media.";
-
-        case 401:
-            return "Gemini authentication failed. Please check the API key.";
-
-        case 403:
-            return "Gemini access was denied. Please check API permissions.";
-
-        case 404:
-            return "The configured AI model is unavailable.";
-
-        case 413:
-            return "The uploaded content is too large.";
-
-        case 429:
-            return "AI rate limit reached. Please try again shortly.";
-
-        case 500:
-        case 502:
-        case 503:
-        case 504:
-            return "The AI service is temporarily unavailable.";
-
-        default:
-            return "MechSyntra AI could not complete the request.";
-    }
-=======
-    if (status === 400) {
-        return "Gemini rejected the request. Please check the request.";
-    }
-
-    if (status === 401) {
-        return "Gemini API authentication failed. Check GEMINI_API_KEY.";
-    }
-
-    if (status === 403) {
-        return "Gemini API access was denied. Check your Google AI project permissions.";
-    }
-
-    if (status === 404) {
-        return "The configured Gemini model is unavailable.";
-    }
-
-    if (status === 413) {
-        return "The attached file is too large.";
-    }
-
-    if (status === 429) {
-        return "Gemini is rate-limited. Please try again shortly.";
-    }
-
-    if (
-        status === 500 ||
-        status === 502 ||
-        status === 503 ||
-        status === 504
-    ) {
-        return "Gemini is temporarily unavailable.";
-    }
-
-    return "MechSyntra AI could not generate a response.";
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-}
-
-function sendError(
-    res,
-    req,
-    status,
-    message
-) {
-
-    return res.status(status).json({
-
-        success: false,
-
-        error: message,
-
-        requestId:
-            req.requestId
-    });
-}
-
-/* =========================================================
-   RESPONSE CLEANER
-========================================================= */
-
-function cleanResponse(
-    text
-) {
-
-    if (
-        typeof text !== "string"
-    ) {
-        return "";
-    }
-
-    return text
-        .trim()
-        .replace(
-            /^```(?:text|markdown|md)?\s*/i,
-            ""
-        )
-        .replace(
-            /\s*```$/i,
-            ""
-        )
-        .replace(
-            /\n{3,}/g,
-            "\n\n"
-        )
-        .trim();
-}
-
-/* =========================================================
-<<<<<<< HEAD
-   GEMINI
-=======
    GEMINI REQUEST
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 ========================================================= */
 
-async function generateWithModel(
+async function generateWithGemini({
     model,
+    prompt,
     contents
-) {
-<<<<<<< HEAD
+}) {
+    if (!ai) {
+        throw new Error(
+            'GEMINI_API_KEY is not configured.'
+        );
+    }
 
-    return ai.models.generateContent({
-
+    const request = {
         model,
 
-        contents,
+        contents:
+            contents || prompt,
 
-=======
-    return await ai.models.generateContent({
-        model,
-        contents,
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         config: {
-
             systemInstruction:
                 SYSTEM_INSTRUCTION,
 
-            temperature: 0.7
+            temperature: 0.7,
+
+            maxOutputTokens: 8192
         }
-    });
-}
+    };
 
-async function generateAI(
-    contents
-) {
-
-    let response;
-    let primaryError;
-
-    try {
-
-        console.log(
-            `[AI] Primary: ${PRIMARY_MODEL}`
+    const response =
+        await withTimeout(
+            ai.models.generateContent(
+                request
+            ),
+            REQUEST_TIMEOUT
         );
 
-        response =
-            await generateWithModel(
-                PRIMARY_MODEL,
-                contents
-            );
+    const text =
+        typeof response?.text === 'string'
+            ? response.text
+            : '';
 
-    } catch (error) {
-
-        primaryError =
-            error;
-
-        console.error(
-            "[AI] Primary failed:",
-            error?.message
+    if (!text.trim()) {
+        throw new Error(
+            'Gemini returned an empty response.'
         );
     }
 
-    if (!response) {
+    return {
+        text: text.trim(),
 
+        model,
+
+        usage:
+            response?.usageMetadata ||
+            null,
+
+        raw: response
+    };
+}
+
+/* =========================================================
+   PRIMARY + BACKUP
+========================================================= */
+
+async function generateAIResponse({
+    prompt,
+    contents
+}) {
+    let primaryError = null;
+
+    try {
+        return await generateWithGemini({
+            model: PRIMARY_MODEL,
+
+            prompt,
+
+            contents
+        });
+    } catch (error) {
+        primaryError = error;
+
+        console.error(
+            '[Gemini Primary Error]',
+            error.message
+        );
+    }
+
+    if (
+        BACKUP_MODEL &&
+        BACKUP_MODEL !== PRIMARY_MODEL
+    ) {
         try {
+            return await generateWithGemini({
+                model: BACKUP_MODEL,
 
-            console.log(
-                `[AI] Fallback: ${FALLBACK_MODEL}`
+                prompt,
+
+                contents
+            });
+        } catch (backupError) {
+            console.error(
+                '[Gemini Backup Error]',
+                backupError.message
             );
 
-            response =
-                await generateWithModel(
-                    FALLBACK_MODEL,
-                    contents
+            const error =
+                new Error(
+                    `AI request failed. Primary: ${primaryError?.message || 'unknown'} Backup: ${backupError.message}`
                 );
 
-        } catch (fallbackError) {
+            error.primary =
+                primaryError;
 
-            console.error(
-                "[AI] Fallback failed:",
-                fallbackError?.message
-            );
+            error.backup =
+                backupError;
 
-            throw (
-                fallbackError ||
-                primaryError
-            );
+            throw error;
         }
     }
 
-    let text = "";
-
-    try {
-
-        if (
-            typeof response.text ===
-            "string"
-        ) {
-
-            text =
-                response.text.trim();
-        }
-
-    } catch (error) {
-
-        console.error(
-            "[AI] Response parsing failed:",
-            error?.message
+    throw primaryError ||
+        new Error(
+            'No AI model available.'
         );
-    }
-
-    text =
-        cleanResponse(text);
-
-    if (!text) {
-
-        throw new Error(
-            "AI returned an empty response."
-        );
-    }
-
-    return text;
 }
 
 /* =========================================================
-   API INFO
+   MULTIMODAL CONTENT
 ========================================================= */
 
-app.get("/", (req, res) => {
-<<<<<<< HEAD
-
-    res.json({
-
-        success: true,
-
-        service: APP_NAME,
-
-        version:
-            APP_VERSION,
-
-        status:
-            "online",
-
-        environment:
-            NODE_ENV,
-
-        requestId:
-            req.requestId,
-
-        capabilities: {
-
-            chat: true,
-
-            multimodal: true,
-
-            conversationMemory: true,
-
-            assignments: true,
-
-            documents: true,
-
-            presentations: true,
-
-            imageEditing: true
-
-        }
-=======
-    res.json({
-        success: true,
-        service: "MechSyntra AI",
-        status: "online",
-        model: PRIMARY_MODEL,
-        multimodal: true,
-        documents: true,
-        assignment: true
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-    });
-});
-
-/* =========================================================
-   HEALTH
-========================================================= */
-
-<<<<<<< HEAD
-app.get(
-    "/health",
-    (req, res) => {
-
-        res.status(200).json({
-
-            success: true,
-
-            status: "healthy",
-
-            service:
-                APP_NAME,
-
-            version:
-                APP_VERSION,
-
-            uptime:
-                Math.floor(
-                    process.uptime()
-                ),
-
-            timestamp:
-                new Date().toISOString(),
-
-            requestId:
-                req.requestId
-        });
+function normalizeAttachment(attachment) {
+    if (!isObject(attachment)) {
+        return null;
     }
-);
-=======
-app.get("/health", (req, res) => {
-    res.json({
-        success: true,
-        status: "healthy",
-        model: PRIMARY_MODEL,
-        multimodal: true,
-        documents: true,
-        assignment: true
-    });
-});
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
-/* =========================================================
-   READINESS
-========================================================= */
+    const mimeType =
+        safeString(
+            attachment.mimeType ||
+            attachment.mime_type ||
+            attachment.type
+        );
 
-app.get(
-    "/ready",
-    (req, res) => {
+    const data =
+        safeString(
+            attachment.data ||
+            attachment.base64 ||
+            attachment.content
+        );
 
-        const ready =
-            Boolean(
-                GEMINI_API_KEY
+    const uri =
+        safeString(
+            attachment.uri ||
+            attachment.url
+        );
+
+    if (!mimeType) {
+        return null;
+    }
+
+    if (data) {
+        return {
+            type: 'inlineData',
+
+            mimeType,
+
+            data: data
+                .replace(
+                    /^data:[^;]+;base64,/,
+                    ''
+                )
+        };
+    }
+
+    if (uri) {
+        return {
+            type: 'uri',
+
+            mimeType,
+
+            uri
+        };
+    }
+
+    return null;
+}
+
+function buildMultimodalContents(
+    prompt,
+    attachments = []
+) {
+    const parts = [
+        {
+            text: prompt
+        }
+    ];
+
+    for (
+        const rawAttachment
+        of Array.isArray(attachments)
+            ? attachments
+            : []
+    ) {
+        const attachment =
+            normalizeAttachment(
+                rawAttachment
             );
 
-        return res
-            .status(
-                ready ? 200 : 503
-            )
-            .json({
+        if (!attachment) {
+            continue;
+        }
 
-                success:
-                    ready,
+        if (
+            attachment.type ===
+            'inlineData'
+        ) {
+            parts.push({
+                inlineData: {
+                    mimeType:
+                        attachment.mimeType,
 
-                status:
-                    ready
-                        ? "ready"
-                        : "not_ready",
-
-                aiConfigured:
-                    ready,
-
-                requestId:
-                    req.requestId
+                    data:
+                        attachment.data
+                }
             });
+
+            continue;
+        }
+
+        if (
+            attachment.type === 'uri'
+        ) {
+            parts.push({
+                fileData: {
+                    fileUri:
+                        attachment.uri,
+
+                    mimeType:
+                        attachment.mimeType
+                }
+            });
+        }
     }
-);
+
+    return [
+        {
+            role: 'user',
+
+            parts
+        }
+    ];
+}
 
 /* =========================================================
-   CHAT HANDLER
+   GENERAL CHAT HANDLER
 ========================================================= */
 
-async function chatHandler(
+async function handleChat(
     req,
     res
 ) {
+    const body =
+        req.body || {};
+
+    const userText =
+        cleanText(
+            body.message ||
+            body.prompt ||
+            body.text
+        );
+
+    if (!userText) {
+        return res.status(400).json({
+            success: false,
+
+            error:
+                'Message is required.'
+        });
+    }
+
+    const conversationId =
+        getSessionId(body);
+
+    const conversation =
+        getConversation(
+            conversationId
+        );
+
+    /*
+     * Store user message BEFORE
+     * context resolution.
+     */
+    addMessage(
+        conversation,
+        'user',
+        userText,
+        {
+            attachments:
+                Array.isArray(
+                    body.attachments
+                )
+                    ? body.attachments.map(
+                        normalizeAttachment
+                    ).filter(Boolean)
+                    : []
+        }
+    );
+
+    /*
+     * Update state.
+     */
+    const contextResult =
+        updateConversationState(
+            conversation,
+            userText
+        );
+
+    /*
+     * Conversation title.
+     */
+    if (
+        conversation.messages.length === 1
+    ) {
+        conversation.title =
+            generateConversationTitle(
+                userText
+            );
+    }
+
+    /*
+     * Track current task.
+     */
+    if (
+        contextResult.intent
+    ) {
+        conversation.state.currentTask =
+            contextResult.intent;
+    }
+
+    /*
+     * Build context-aware prompt.
+     */
+    const prompt =
+        buildTextPrompt(
+            userText,
+            conversation
+        );
+
+    /*
+     * Multimodal content.
+     */
+    const attachments =
+        Array.isArray(
+            body.attachments
+        )
+            ? body.attachments
+            : [];
+
+    const contents =
+        attachments.length
+            ? buildMultimodalContents(
+                prompt,
+                attachments
+            )
+            : undefined;
 
     try {
+        const result =
+            await generateAIResponse({
+                prompt,
 
-        const message =
-            typeof req.body?.message === "string"
-                ? req.body.message.trim()
-                : "";
-
-        const history =
-            Array.isArray(
-                req.body?.history
-            )
-                ? req.body.history
-                : Array.isArray(
-                    req.body?.messages
-                )
-                    ? req.body.messages
-                    : [];
-
-        if (
-            message.length >
-            MAX_MESSAGE_LENGTH
-        ) {
-
-            return sendError(
-                res,
-                req,
-                413,
-                "Message is too long."
-            );
-        }
-
-        const media =
-            getMediaFromBody(
-                req.body
-            );
-
-        if (
-            !message &&
-            !media
-        ) {
-
-            return sendError(
-                res,
-                req,
-                400,
-                "Message or media is required."
-            );
-        }
-
-        const contents =
-            buildConversationContents(
-                message,
-                history,
-                media
-            );
+                contents
+            });
 
         const answer =
-            await generateAI(
-                contents
+            result.text;
+
+        /*
+         * Detect whether AI asked a
+         * question. If yes, remember it.
+         */
+        const question =
+            extractLastQuestion(
+                answer
             );
 
-        return res.status(200).json({
+        if (question) {
+            conversation.state.lastAIQuestion =
+                question;
 
+            conversation.state.waitingFor =
+                detectQuestionTarget(
+                    question
+                );
+        } else {
+            conversation.state.lastAIQuestion =
+                null;
+
+            conversation.state.waitingFor =
+                null;
+        }
+
+        conversation.state.lastAIMessage =
+            answer;
+
+        addMessage(
+            conversation,
+            'assistant',
+            answer,
+            {
+                model:
+                    result.model
+            }
+        );
+
+        return res.json({
             success: true,
 
-            reply:
+            conversationId:
+                conversation.id,
+
+            messageId:
+                conversation.messages[
+                    conversation.messages.length - 1
+                ].id,
+
+            response:
                 answer,
 
-            requestId:
-                req.requestId,
+            message:
+                answer,
 
-            conversationMemory:
-                true,
+            model:
+                result.model,
 
-            historyUsed:
-                normalizeHistory(
-                    history
-                ).length
+            intent:
+                conversation.state.currentIntent,
+
+            workflow:
+                conversation.state.activeWorkflow,
+
+            context:
+                buildContextSummary(
+                    conversation
+                )
         });
 
     } catch (error) {
-
         console.error(
-            "[CHAT ERROR]",
+            '[CHAT ERROR]',
             error
         );
 
-        const status =
-            getErrorStatus(error);
+        return res.status(500).json({
+            success: false,
 
-        return sendError(
-            res,
-            req,
-            status >= 400 &&
-            status < 600
-                ? status
-                : 500,
-            getFriendlyError(
-                error
-            )
-        );
+            error:
+                'AI server error.',
+
+            message:
+                error.message,
+
+            conversationId:
+                conversation.id
+        });
     }
 }
 
 /* =========================================================
-   CHAT ROUTES
+   QUESTION EXTRACTION
 ========================================================= */
 
-app.post(
-    "/chat",
-    chatHandler
-);
+function extractLastQuestion(
+    text
+) {
+    const normalized =
+        cleanText(text);
 
-app.post(
-    "/api/v1/chat",
-    chatHandler
-);
+    const parts =
+        normalized
+            .split(/(?<=[?؟])\s+/)
+            .filter(Boolean);
+
+    for (
+        let i = parts.length - 1;
+        i >= 0;
+        i--
+    ) {
+        if (
+            /[?؟]\s*$/.test(parts[i])
+        ) {
+            return parts[i].trim();
+        }
+    }
+
+    return null;
+}
 
 /* =========================================================
    PRESENTATION GENERATOR
 ========================================================= */
 
-async function presentationHandler(
+async function generatePresentation(
     req,
     res
 ) {
+    const body =
+        req.body || {};
 
-    try {
+    const topic =
+        cleanText(
+            body.topic ||
+            body.title ||
+            body.message
+        );
 
-        const topic =
-            typeof req.body?.topic === "string"
-                ? req.body.topic.trim()
-                : "";
+    const slideCount =
+        Number(
+            body.slideCount ||
+            body.slides ||
+            10
+        );
 
-        const language =
-            typeof req.body?.language === "string"
-                ? req.body.language.trim()
-                : "English";
+    const language =
+        cleanText(
+            body.language ||
+            'English'
+        );
 
-        const slides =
-            Math.min(
-                Math.max(
-                    Number(
-                        req.body?.slides
-                    ) || 10,
-                    3
-                ),
-                40
-            );
+    const audience =
+        cleanText(
+            body.audience ||
+            'general audience'
+        );
 
-        if (!topic) {
+    if (!topic) {
+        return res.status(400).json({
+            success: false,
 
-            return sendError(
-                res,
-                req,
-                400,
-                "Presentation topic is required."
-            );
-        }
+            error:
+                'Presentation topic is required.'
+        });
+    }
 
-        const prompt = `
-Create a professional presentation.
+    const prompt = `
+Create a professional ${slideCount}-slide presentation.
 
 Topic:
 ${topic}
 
+Audience:
+${audience}
+
 Language:
 ${language}
 
-Number of slides:
-${slides}
+Requirements:
 
-Return presentation-ready content.
+- Give every slide a clear title.
+- Give concise but useful slide content.
+- Do not merely explain the topic.
+- Produce actual presentation-ready content.
+- Include introduction.
+- Include key concepts.
+- Include examples where useful.
+- Include conclusion.
+- Include references when appropriate.
+- Do not invent citations.
+- Keep slides readable.
+- Do not overload slides with paragraphs.
 
-Structure:
+Return:
 
-TITLE:
-[Title]
-
-SLIDE 1:
+SLIDE 1
 Title:
 Content:
-Speaker Notes:
 
-SLIDE 2:
+SLIDE 2
 Title:
 Content:
-Speaker Notes:
 
-Continue until ${slides} slides.
-
-Include relevant:
-- Introduction
-- Main concepts
-- Examples
-- Applications
-- Important points
-- Conclusion
-
-Do not ask for the topic again.
+Continue until the requested slide count.
 `;
 
-        const contents =
-            buildConversationContents(
+    try {
+        const result =
+            await generateAIResponse({
                 prompt
-            );
+            });
 
-        const content =
-            await generateAI(
-                contents
-            );
-
-        return res.status(200).json({
-
+        return res.json({
             success: true,
 
             type:
-                "presentation",
+                'presentation',
 
             topic,
 
+            slideCount,
+
             language,
 
-            slides,
+            audience,
 
-            content,
+            model:
+                result.model,
 
-            requestId:
-                req.requestId
+            content:
+                result.text
         });
 
     } catch (error) {
-
         console.error(
-            "[PRESENTATION ERROR]",
+            '[PRESENTATION ERROR]',
             error
         );
 
-        return sendError(
-            res,
-            req,
-            500,
-            getFriendlyError(
-                error
-            )
-        );
+        return res.status(500).json({
+            success: false,
+
+            error:
+                'Presentation generation failed.',
+
+            message:
+                error.message
+        });
     }
 }
 
-app.post(
-    "/generate-presentation",
-    presentationHandler
-);
+/* =========================================================
+   ASSIGNMENT GENERATOR
+========================================================= */
 
-app.post(
-    "/api/v1/generate-presentation",
-    presentationHandler
-);
+async function generateAssignment(
+    req,
+    res
+) {
+    const body =
+        req.body || {};
+
+    const topic =
+        cleanText(
+            body.topic ||
+            body.title ||
+            body.message
+        );
+
+    const level =
+        cleanText(
+            body.level ||
+            body.class ||
+            body.grade ||
+            'University'
+        );
+
+    const language =
+        cleanText(
+            body.language ||
+            'English'
+        );
+
+    if (!topic) {
+        return res.status(400).json({
+            success: false,
+
+            error:
+                'Assignment topic is required.'
+        });
+    }
+
+    const prompt = `
+Create a professional academic assignment.
+
+Topic:
+${topic}
+
+Academic level:
+${level}
+
+Language:
+${language}
+
+Structure:
+
+1. Title
+2. Introduction
+3. Main discussion
+4. Important concepts
+5. Examples where appropriate
+6. Analysis
+7. Conclusion
+8. References if sources are actually known
+
+Do not invent citations.
+
+Write a complete assignment, not merely an outline.
+`;
+
+    try {
+        const result =
+            await generateAIResponse({
+                prompt
+            });
+
+        return res.json({
+            success: true,
+
+            type:
+                'assignment',
+
+            topic,
+
+            level,
+
+            language,
+
+            model:
+                result.model,
+
+            content:
+                result.text
+        });
+
+    } catch (error) {
+        console.error(
+            '[ASSIGNMENT ERROR]',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+
+            error:
+                'Assignment generation failed.',
+
+            message:
+                error.message
+        });
+    }
+}
 
 /* =========================================================
    DOCUMENT GENERATOR
 ========================================================= */
 
-let documentGenerator = null;
+async function generateDocument(
+    req,
+    res
+) {
+    const body =
+        req.body || {};
 
-try {
-
-    documentGenerator =
-        require(
-            "./features/documentGenerator"
+    const title =
+        cleanText(
+            body.title ||
+            body.topic ||
+            'Document'
         );
 
-    console.log(
-        "[SYSTEM] Document generator loaded."
-    );
+    const type =
+        cleanText(
+            body.type ||
+            body.documentType ||
+            'professional report'
+        );
 
-} catch (error) {
+    const language =
+        cleanText(
+            body.language ||
+            'English'
+        );
 
-    console.warn(
-        "[SYSTEM] Document generator unavailable:",
-        error?.message
-    );
+    const instructions =
+        cleanText(
+            body.instructions ||
+            body.prompt ||
+            body.message
+        );
+
+    const prompt = `
+Create a professional ${type}.
+
+Title:
+${title}
+
+Language:
+${language}
+
+User instructions:
+${instructions || 'Use appropriate professional structure.'}
+
+Requirements:
+
+- Professional structure
+- Clear headings
+- Logical sections
+- Accurate information
+- No invented citations
+- No invented measurements
+- No invented experimental results
+- Clearly mark missing information
+- Produce document-ready text
+
+Return the complete document content.
+`;
+
+    try {
+        const result =
+            await generateAIResponse({
+                prompt
+            });
+
+        return res.json({
+            success: true,
+
+            type:
+                'document',
+
+            title,
+
+            documentType:
+                type,
+
+            language,
+
+            model:
+                result.model,
+
+            content:
+                result.text
+        });
+
+    } catch (error) {
+        console.error(
+            '[DOCUMENT ERROR]',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+
+            error:
+                'Document generation failed.',
+
+            message:
+                error.message
+        });
+    }
 }
 
 /* =========================================================
-   DOCUMENT ROUTE
+   PROJECT COPILOT
 ========================================================= */
 
-app.post(
-    [
-        "/generate-document",
-        "/api/v1/generate-document"
-    ],
-    async (req, res) => {
-
-        try {
-
-<<<<<<< HEAD
-            if (!documentGenerator) {
-
-                return sendError(
-                    res,
-                    req,
-                    500,
-                    "Document generator module is unavailable."
-                );
-            }
-
-            const {
-                title,
-                content,
-                format = "both",
-                fileName
-            } = req.body || {};
-
-            if (
-                typeof content !== "string" ||
-                !content.trim()
-            ) {
-
-                return sendError(
-                    res,
-                    req,
-                    400,
-                    "Document content is required."
-                );
-            }
-
-            if (
-                ![
-                    "word",
-                    "pdf",
-                    "both"
-                ].includes(format)
-            ) {
-
-                return sendError(
-                    res,
-                    req,
-                    400,
-                    "Format must be word, pdf or both."
-                );
-            }
-
-            const cleanTitle =
-                typeof title === "string" &&
-                title.trim()
-                    ? title.trim()
-                    : "MechSyntra Document";
-
-            const files = [];
-
-            if (
-                format === "word" ||
-                format === "both"
-            ) {
-
-                const word =
-                    await documentGenerator
-                        .createWordDocument({
-
-                            title:
-                                cleanTitle,
-
-                            content,
-
-                            fileName
-                        });
-
-                files.push({
-
-                    type: "word",
-
-                    fileName:
-                        word.fileName,
-
-                    url:
-                        `/generated/${word.fileName}`,
-
-                    mimeType:
-                        word.mimeType
-                });
-            }
-
-            if (
-                format === "pdf" ||
-                format === "both"
-            ) {
-
-                const pdf =
-                    await documentGenerator
-                        .createPdfDocument({
-
-                            title:
-                                cleanTitle,
-
-                            content,
-
-                            fileName
-                        });
-
-                files.push({
-
-                    type: "pdf",
-
-                    fileName:
-                        pdf.fileName,
-
-                    url:
-                        `/generated/${pdf.fileName}`,
-
-                    mimeType:
-                        pdf.mimeType
-                });
-            }
-
-            return res.status(200).json({
-
-                success: true,
-
-                message:
-                    "Document generated successfully.",
-
-                files,
-
-                requestId:
-                    req.requestId
-            });
-
-        } catch (error) {
-
-            console.error(
-                "[DOCUMENT ERROR]",
-                error
-            );
-
-            return sendError(
-                res,
-                req,
-                500,
-                error?.message ||
-                "Could not generate the document."
-            );
-        }
-    }
-);
-
-/* =========================================================
-   ASSIGNMENT
-========================================================= */
-
-app.post(
-    [
-        "/generate-assignment",
-        "/api/v1/generate-assignment"
-    ],
-    async (req, res) => {
-
-        try {
-
-=======
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-            const {
-                topic,
-                language = "English",
-                pages = 5,
-                format = "both",
-                fileName
-            } = req.body || {};
-
-            if (
-                typeof topic !== "string" ||
-                !topic.trim()
-            ) {
-
-                return sendError(
-                    res,
-                    req,
-                    400,
-                    "Assignment topic is required."
-                );
-            }
-
-            const requestedPages =
-                Math.min(
-                    Math.max(
-                        Number(pages) || 5,
-                        1
-                    ),
-                    50
-                );
-
-<<<<<<< HEAD
-=======
-            const requestedFormat =
-                String(format || "both")
-                    .toLowerCase()
-                    .trim();
-
-            if (
-                !["word", "pdf", "both"]
-                    .includes(requestedFormat)
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        "Format must be word, pdf or both."
-                });
-            }
-
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-            const prompt = `
-Create a complete academic assignment.
-
-Topic:
-${topic.trim()}
-
-Language:
-<<<<<<< HEAD
-${language}
-=======
-${requestedLanguage}
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-
-Target length:
-Approximately ${requestedPages} pages.
-
-<<<<<<< HEAD
-Include:
-
-- Title
-- Introduction
-- Relevant sections
-- Detailed explanations
-- Examples where useful
-- Conclusion
-- References only when reliable
-
-Never invent citations or sources.
-
-Return assignment content only.
-`;
-
-            const content =
-                await generateAI(
-                    buildConversationContents(
-                        prompt
-                    )
-=======
-Requirements:
-- Write entirely in the requested language.
-- If Roman Urdu is requested, use Roman Urdu.
-- Include a clear title.
-- Include Introduction.
-- Include relevant sections and subtopics.
-- Explain the topic properly.
-- Include examples where useful.
-- Include Conclusion.
-- Include References only if reliable references can be provided.
-- Never invent citations or references.
-- Do not mention that you are an AI.
-- Return only the assignment content.
-`;
-
-            const contents = [
-                {
-                    role: "user",
-                    parts: [
-                        {
-                            text: prompt
-                        }
-                    ]
-                }
-            ];
-
-            let response = null;
-            let lastError = null;
-
-            try {
-                console.log(
-                    "Assignment primary:",
-                    PRIMARY_MODEL
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-                );
-
-            if (!documentGenerator) {
-
-<<<<<<< HEAD
-                return sendError(
-                    res,
-                    req,
-                    500,
-                    "Document generator module is unavailable."
-                );
-            }
-
-            const files = [];
-=======
-            } catch (error) {
-
-                lastError = error;
-
-                console.error(
-                    "Assignment primary error:",
-                    error?.message
-                );
-            }
-
-            if (!response) {
-
-                try {
-
-                    console.log(
-                        "Assignment fallback:",
-                        FALLBACK_MODEL
-                    );
-
-                    response =
-                        await generateWithModel(
-                            FALLBACK_MODEL,
-                            contents
-                        );
-
-                } catch (error) {
-
-                    lastError = error;
-
-                    console.error(
-                        "Assignment fallback error:",
-                        error?.message
-                    );
-                }
-            }
-
-            if (!response) {
-                return res.status(502).json({
-                    success: false,
-                    error:
-                        getFriendlyError(
-                            lastError
-                        ),
-                    status:
-                        getErrorStatus(
-                            lastError
-                        )
-                });
-            }
-
-            let assignmentContent = "";
-
-            try {
-                assignmentContent =
-                    typeof response.text === "string"
-                        ? response.text.trim()
-                        : "";
-            } catch (error) {
-                console.error(
-                    "Assignment text extraction error:",
-                    error?.message
-                );
-            }
-
-            assignmentContent =
-                cleanResponse(
-                    assignmentContent
-                );
-
-            if (!assignmentContent) {
-                return res.status(502).json({
-                    success: false,
-                    error:
-                        "Gemini returned empty assignment content."
-                });
-            }
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-
-            const cleanTitle =
-                topic.trim().slice(0, 120);
-
-<<<<<<< HEAD
-=======
-            const generatedFiles = [];
-
-            /* WORD */
-
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-            if (
-                requestedFormat === "word" ||
-                requestedFormat === "both"
-            ) {
-<<<<<<< HEAD
-=======
-
-                console.log(
-                    "Creating Word document..."
-                );
-
-                const word =
-                    await createWordDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            assignmentContent,
-                        fileName:
-                            fileName ||
-                            cleanTitle
-                    });
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-
-                const word =
-                    await documentGenerator
-                        .createWordDocument({
-
-                            title:
-                                cleanTitle,
-
-                            content,
-
-                            fileName:
-                                fileName ||
-                                cleanTitle
-                        });
-
-                files.push({
-
-                    type: "word",
-
-                    fileName:
-                        word.fileName,
-
-                    url:
-                        `/generated/${word.fileName}`,
-
-                    mimeType:
-                        word.mimeType
-                });
-
-                console.log(
-                    "Word created:",
-                    word.filePath
-                );
-            }
-
-            /* PDF */
-
-            if (
-                requestedFormat === "pdf" ||
-                requestedFormat === "both"
-            ) {
-<<<<<<< HEAD
-=======
-
-                console.log(
-                    "Creating PDF document..."
-                );
-
-                const pdf =
-                    await createPdfDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            assignmentContent,
-                        fileName:
-                            fileName ||
-                            cleanTitle
-                    });
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-
-                const pdf =
-                    await documentGenerator
-                        .createPdfDocument({
-
-                            title:
-                                cleanTitle,
-
-                            content,
-
-                            fileName:
-                                fileName ||
-                                cleanTitle
-                        });
-
-                files.push({
-
-                    type: "pdf",
-
-                    fileName:
-                        pdf.fileName,
-
-                    url:
-                        `/generated/${pdf.fileName}`,
-
-                    mimeType:
-                        pdf.mimeType
-                });
-
-<<<<<<< HEAD
-=======
-                console.log(
-                    "PDF created:",
-                    pdf.filePath
-                );
-            }
-
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-            return res.status(200).json({
-
-                success: true,
-
-                message:
-                    "Assignment generated successfully.",
-
-                title:
-                    cleanTitle,
-
-                language,
-
-<<<<<<< HEAD
-=======
-            console.error("");
-            console.error(
-                "========================================"
-            );
-            console.error(
-                "GENERATE ASSIGNMENT ERROR"
-            );
-            console.error(
-                error
-            );
-            console.error(
-                "========================================"
-            );
-
-            return res.status(500).json({
-                success: false,
-                error:
-                    error?.message ||
-                    "Could not generate the assignment."
-            });
-        }
-    }
-);
-
-/* =========================================================
-   GENERATE DOCUMENT
-========================================================= */
-
-app.post(
-    "/generate-document",
-    async (req, res) => {
-
-        try {
-
-            const {
-                title,
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-                content,
-
-                files,
-
-<<<<<<< HEAD
-                requestId:
-                    req.requestId
-=======
-            const requestedFormat =
-                String(format || "both")
-                    .toLowerCase()
-                    .trim();
-
-            if (
-                !["word", "pdf", "both"]
-                    .includes(requestedFormat)
-            ) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        "Format must be word, pdf or both."
-                });
-            }
-
-            const cleanTitle =
-                typeof title === "string" &&
-                title.trim()
-                    ? title.trim()
-                    : "MechSyntra Assignment";
-
-            const results = [];
-
-            /* WORD */
-
-            if (
-                requestedFormat === "word" ||
-                requestedFormat === "both"
-            ) {
-
-                console.log(
-                    "Creating Word document..."
-                );
-
-                const word =
-                    await createWordDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            content,
-                        fileName:
-                            fileName ||
-                            cleanTitle
-                    });
-
-                results.push({
-                    type: "word",
-                    fileName:
-                        word.fileName,
-                    url:
-                        `/generated/${word.fileName}`,
-                    mimeType:
-                        word.mimeType
-                });
-
-                console.log(
-                    "Word created:",
-                    word.filePath
-                );
-            }
-
-            /* PDF */
-
-            if (
-                requestedFormat === "pdf" ||
-                requestedFormat === "both"
-            ) {
-
-                console.log(
-                    "Creating PDF document..."
-                );
-
-                const pdf =
-                    await createPdfDocument({
-                        title:
-                            cleanTitle,
-                        content:
-                            content,
-                        fileName:
-                            fileName ||
-                            cleanTitle
-                    });
-
-                results.push({
-                    type: "pdf",
-                    fileName:
-                        pdf.fileName,
-                    url:
-                        `/generated/${pdf.fileName}`,
-                    mimeType:
-                        pdf.mimeType
-                });
-
-                console.log(
-                    "PDF created:",
-                    pdf.filePath
-                );
-            }
-
-            return res.status(200).json({
-                success: true,
-                message:
-                    "Document generated successfully.",
-                files:
-                    results
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-            });
-
-        } catch (error) {
-
-            console.error(
-<<<<<<< HEAD
-                "[ASSIGNMENT ERROR]",
-                error
-            );
-
-            return sendError(
-                res,
-                req,
-                500,
-                error?.message ||
-                "Could not generate the assignment."
-            );
-=======
-                "DOCUMENT GENERATION ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                error:
-                    error?.message ||
-                    "Could not generate the requested document."
-            });
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-        }
-    }
-);
-
-/* =========================================================
-   IMAGE EDITING
-========================================================= */
-
-app.post(
-    [
-        "/edit-image",
-        "/api/v1/edit-image"
-    ],
-    async (req, res) => {
-
-        try {
-
-<<<<<<< HEAD
-            const prompt =
-                typeof req.body?.prompt === "string"
-                    ? req.body.prompt.trim()
-                    : "";
-
-            const media =
-                getMediaFromBody(
-                    req.body
-                );
-
-            if (!prompt) {
-
-                return sendError(
-                    res,
-                    req,
-                    400,
-                    "Image editing instruction is required."
-                );
-            }
-
-            if (!media) {
-
-                return sendError(
-                    res,
-                    req,
-                    400,
-                    "An image is required."
-                );
-=======
-            const message =
-                typeof req.body?.message === "string"
-                    ? req.body.message.trim()
-                    : "";
-
-            const mediaBase64 =
-                typeof req.body?.mediaBase64 === "string"
-                    ? req.body.mediaBase64
-                    : "";
-
-            if (
-                message.length > 20000
-            ) {
-                return res.status(413).json({
-                    success: false,
-                    error:
-                        "Message is too long."
-                });
-            }
-
-            if (
-                mediaBase64 &&
-                mediaBase64.length >
-                    MAX_MEDIA_BASE64_LENGTH
-            ) {
-                return res.status(413).json({
-                    success: false,
-                    error:
-                        "Attached media is too large."
-                });
-            }
-
-            let parts;
-
-            try {
-                parts =
-                    buildUserParts(
-                        req.body
-                    );
-            } catch (error) {
-                return res.status(400).json({
-                    success: false,
-                    error:
-                        error.message
-                });
-            }
-
-            const contents = [
-                {
-                    role: "user",
-                    parts
-                }
-            ];
-
-            let response = null;
-            let lastError = null;
-
-            try {
-
-                response =
-                    await generateWithModel(
-                        PRIMARY_MODEL,
-                        contents
-                    );
-
-            } catch (error) {
-
-                lastError = error;
-
-                console.error(
-                    "Chat primary error:",
-                    error?.message
-                );
-            }
-
-            if (!response) {
-
-                try {
-
-                    response =
-                        await generateWithModel(
-                            FALLBACK_MODEL,
-                            contents
-                        );
-
-                } catch (error) {
-
-                    lastError = error;
-
-                    console.error(
-                        "Chat fallback error:",
-                        error?.message
-                    );
-                }
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-            }
-
-            if (
-                !media.mimeType.startsWith(
-                    "image/"
-                )
-            ) {
-
-                return sendError(
-                    res,
-                    req,
-                    400,
-                    "Only image files can be edited."
-                );
-            }
-
-            const response =
-                await ai.models.generateContent({
-
-                    model:
-                        IMAGE_MODEL,
-
-                    contents: [
-                        {
-                            role: "user",
-
-                            parts: [
-
-                                {
-                                    text:
-                                        prompt
-                                },
-
-                                createInlineDataPart(
-                                    media.mimeType,
-                                    media.base64
-                                )
-                            ]
-                        }
-                    ]
-                });
-
-<<<<<<< HEAD
-            const parts =
-                response
-                    ?.candidates?.[0]
-                    ?.content?.parts || [];
-
-            let imagePart = null;
-            let responseText = "";
-
-            for (
-                const part of parts
-            ) {
-
-                if (
-                    part?.inlineData?.data
-                ) {
-
-                    imagePart =
-                        part.inlineData;
-                }
-
-                if (
-                    typeof part?.text ===
-                    "string"
-                ) {
-
-                    responseText +=
-                        part.text;
-                }
-            }
-
-            if (!imagePart) {
-
-                return sendError(
-                    res,
-                    req,
-                    502,
-                    responseText.trim() ||
-                    "The AI model did not return an edited image."
-                );
-            }
-=======
-            let answer =
-                typeof response.text === "string"
-                    ? response.text.trim()
-                    : "";
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-
-            const extension =
-                imagePart.mimeType ===
-                "image/png"
-                    ? "png"
-                    : "jpg";
-
-            const fileName =
-                `mechsyntra-edit-${Date.now()}-${crypto.randomBytes(6).toString("hex")}.${extension}`;
-
-            const outputPath =
-                path.join(
-                    GENERATED_DIR,
-                    fileName
-                );
-
-            fs.writeFileSync(
-                outputPath,
-                Buffer.from(
-                    imagePart.data,
-                    "base64"
-                )
-            );
-
-            return res.status(200).json({
-
-                success: true,
-
-                type:
-                    "image",
-
-                fileName,
-
-                url:
-                    `/generated/${fileName}`,
-
-                mimeType:
-                    imagePart.mimeType,
-
-                message:
-                    "Image edited successfully.",
-
-                requestId:
-                    req.requestId
-            });
-
-        } catch (error) {
-
-            console.error(
-<<<<<<< HEAD
-                "[IMAGE ERROR]",
-                error
-            );
-
-            return sendError(
-                res,
-                req,
-                500,
-                getFriendlyError(
-                    error
-                )
-            );
-=======
-                "CHAT ERROR:",
-                error
-            );
-
-            return res.status(500).json({
-                success: false,
-                error:
-                    error?.message ||
-                    "MechSyntra AI server could not process the request."
-            });
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-        }
-    }
-);
-
-/* =========================================================
-<<<<<<< HEAD
-   404
-=======
-   METHOD NOT ALLOWED
-========================================================= */
-
-app.use(
-    "/chat",
-    (req, res) => {
-
-        return res.status(405).json({
-            success: false,
-            error:
-                "Use POST /chat for AI messages."
-        });
-    }
-);
-
-/* =========================================================
-   UNKNOWN ROUTE
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-========================================================= */
-
-app.use(
-    (req, res) => {
-
-        return res.status(404).json({
-
+async function projectCopilot(
+    req,
+    res
+) {
+    const body =
+        req.body || {};
+
+    const userText =
+        cleanText(
+            body.message ||
+            body.prompt ||
+            body.text
+        );
+
+    if (!userText) {
+        return res.status(400).json({
             success: false,
 
             error:
-                "API endpoint not found.",
-
-            path:
-                req.originalUrl,
-
-            requestId:
-                req.requestId
+                'Project Copilot message is required.'
         });
     }
-);
 
-/* =========================================================
-<<<<<<< HEAD
-   GLOBAL ERROR HANDLER
-=======
-   START SERVER
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-========================================================= */
+    const conversationId =
+        getSessionId(body);
 
-app.use(
-    (error, req, res, next) => {
+    const conversation =
+        getConversation(
+            conversationId
+        );
 
+    const projectContext =
+        isObject(
+            body.projectContext
+        )
+            ? body.projectContext
+            : {};
+
+    conversation.state.projectContext =
+        {
+            ...conversation.state.projectContext,
+            ...projectContext
+        };
+
+    addMessage(
+        conversation,
+        'user',
+        userText
+    );
+
+    updateConversationState(
+        conversation,
+        userText
+    );
+
+    const projectPrompt = `
+You are the MechSyntra AI Project Copilot.
+
+CURRENT PROJECT:
+
+${JSON.stringify(
+        conversation.state.projectContext,
+        null,
+        2
+    )}
+
+CURRENT CONVERSATION STATE:
+
+${JSON.stringify(
+        buildContextSummary(
+            conversation
+        ),
+        null,
+        2
+    )}
+
+RECENT MESSAGES:
+
+${getRecentMessages(
+        conversation
+    )
+        .map(
+            message =>
+                `${message.role}: ${message.content}`
+        )
+        .join('\n')}
+
+USER:
+
+${userText}
+
+Help the user with the project.
+
+You should understand the project context.
+
+If the user asks:
+
+"what should I do next?"
+
+determine the next useful project step.
+
+If the user asks for components,
+provide a component plan.
+
+If the user asks for research,
+provide a research plan.
+
+If the user asks for coding,
+provide code when possible.
+
+If the user asks for troubleshooting,
+provide structured diagnosis steps.
+
+Do not invent technical specifications.
+
+Do not invent prices.
+
+Do not invent research citations.
+
+Use:
+
+CURRENT STATUS
+RECOMMENDED ACTION
+WHY
+STEPS
+NEXT ACTION
+
+when appropriate.
+`;
+
+    try {
+        const result =
+            await generateAIResponse({
+                prompt:
+                    projectPrompt
+            });
+
+        addMessage(
+            conversation,
+            'assistant',
+            result.text,
+            {
+                model:
+                    result.model
+            }
+        );
+
+        conversation.state.lastAIMessage =
+            result.text;
+
+        const question =
+            extractLastQuestion(
+                result.text
+            );
+
+        conversation.state.lastAIQuestion =
+            question;
+
+        conversation.state.waitingFor =
+            question
+                ? detectQuestionTarget(
+                    question
+                )
+                : null;
+
+        return res.json({
+            success: true,
+
+            conversationId:
+                conversation.id,
+
+            response:
+                result.text,
+
+            model:
+                result.model,
+
+            projectContext:
+                conversation.state.projectContext,
+
+            context:
+                buildContextSummary(
+                    conversation
+                )
+        });
+
+    } catch (error) {
         console.error(
-            "[GLOBAL ERROR]",
+            '[PROJECT COPILOT ERROR]',
+            error
+        );
+
+        return res.status(500).json({
+            success: false,
+
+            error:
+                'Project Copilot failed.',
+
+            message:
+                error.message
+        });
+    }
+}
+
+/* =========================================================
+   CONVERSATION HISTORY
+========================================================= */
+
+function getConversationHistory(
+    req,
+    res
+) {
+    const id =
+        getSessionId(
+            req.query || {}
+        );
+
+    const conversation =
+        getConversation(id);
+
+    return res.json({
+        success: true,
+
+        conversationId:
+            conversation.id,
+
+        title:
+            conversation.title,
+
+        messages:
+            conversation.messages,
+
+        context:
+            buildContextSummary(
+                conversation
+            )
+    });
+}
+
+/* =========================================================
+   UPDATE CONVERSATION
+========================================================= */
+
+function updateConversation(
+    req,
+    res
+) {
+    const id =
+        getSessionId(
+            req.body || {}
+        );
+
+    const conversation =
+        getConversation(id);
+
+    const body =
+        req.body || {};
+
+    if (
+        typeof body.title === 'string'
+    ) {
+        conversation.title =
+            cleanText(
+                body.title,
+                200
+            );
+    }
+
+    if (
+        isObject(
+            body.projectContext
+        )
+    ) {
+        conversation.state.projectContext =
+            {
+                ...conversation.state.projectContext,
+
+                ...body.projectContext
+            };
+    }
+
+    touchConversation(
+        conversation
+    );
+
+    return res.json({
+        success: true,
+
+        conversationId:
+            conversation.id,
+
+        title:
+            conversation.title,
+
+        context:
+            buildContextSummary(
+                conversation
+            )
+    });
+}
+
+/* =========================================================
+   DELETE CONVERSATION
+========================================================= */
+
+function deleteConversation(
+    req,
+    res
+) {
+    const id =
+        cleanText(
+            req.params.id,
+            200
+        );
+
+    const existed =
+        conversations.delete(id);
+
+    return res.json({
+        success: true,
+
+        deleted:
+            existed,
+
+        conversationId:
+            id
+    });
+}
+
+/* =========================================================
+   CLEAR CONVERSATION
+========================================================= */
+
+function clearConversation(
+    req,
+    res
+) {
+    const id =
+        getSessionId(
+            req.body || {}
+        );
+
+    const conversation =
+        getConversation(id);
+
+    conversation.messages = [];
+
+    conversation.state = {
+        currentIntent: null,
+
+        currentTask: null,
+
+        currentSubTask: null,
+
+        waitingFor: null,
+
+        conversationGoal: null,
+
+        lastAIQuestion: null,
+
+        lastUserMessage: null,
+
+        lastAIMessage: null,
+
+        collectedInformation: {},
+
+        missingInformation: [],
+
+        projectContext:
+            conversation.state.projectContext ||
+            {},
+
+        artifact: null,
+
+        activeWorkflow: null
+    };
+
+    conversation.title =
+        'New Conversation';
+
+    touchConversation(
+        conversation
+    );
+
+    return res.json({
+        success: true,
+
+        conversationId:
+            conversation.id,
+
+        message:
+            'Conversation cleared.'
+    });
+}
+
+/* =========================================================
+   HEALTH
+========================================================= */
+
+function health(
+    req,
+    res
+) {
+    return res.json({
+        success: true,
+
+        status:
+            'healthy',
+
+        service:
+            'MechSyntra AI Backend',
+
+        version:
+            '2.0.0',
+
+        model:
+            PRIMARY_MODEL,
+
+        backupModel:
+            BACKUP_MODEL,
+
+        geminiConfigured:
+            Boolean(GEMINI_API_KEY),
+
+        multimodal:
+            true,
+
+        documents:
+            true,
+
+        assignment:
+            true,
+
+        presentation:
+            true,
+
+        conversationMemory:
+            true,
+
+        contextAware:
+            true,
+
+        projectCopilot:
+            true,
+
+        uptime:
+            process.uptime(),
+
+        timestamp:
+            nowISO()
+    });
+}
+
+/* =========================================================
+   ROOT
+========================================================= */
+
+function root(
+    req,
+    res
+) {
+    return res.json({
+        success: true,
+
+        name:
+            'MechSyntra AI Backend',
+
+        status:
+            'online',
+
+        version:
+            '2.0.0',
+
+        endpoints: {
+            health:
+                '/health',
+
+            chat:
+                '/chat',
+
+            projectCopilot:
+                '/project-copilot',
+
+            presentation:
+                '/generate-presentation',
+
+            assignment:
+                '/generate-assignment',
+
+            document:
+                '/generate-document',
+
+            history:
+                '/conversation/:id'
+        }
+    });
+}
+
+/* =========================================================
+   ERROR HANDLER
+========================================================= */
+
+app.use(
+    (
+        error,
+        req,
+        res,
+        next
+    ) => {
+        console.error(
+            '[UNHANDLED ERROR]',
             error
         );
 
@@ -2658,18 +2397,243 @@ app.use(
         }
 
         return res.status(500).json({
-
             success: false,
 
             error:
-                NODE_ENV === "production"
-                    ? "Internal server error."
-                    : error?.message ||
-                      "Internal server error.",
+                'Internal server error.',
 
-            requestId:
-                req.requestId
+            message:
+                process.env.NODE_ENV ===
+                'production'
+                    ? 'Something went wrong.'
+                    : error.message
         });
+    }
+);
+
+/* =========================================================
+   ROUTES
+========================================================= */
+
+app.get(
+    '/',
+    root
+);
+
+app.get(
+    '/health',
+    health
+);
+
+app.post(
+    '/chat',
+    handleChat
+);
+
+app.post(
+    '/project-copilot',
+    projectCopilot
+);
+
+app.post(
+    '/generate-presentation',
+    generatePresentation
+);
+
+app.post(
+    '/generate-assignment',
+    generateAssignment
+);
+
+app.post(
+    '/generate-document',
+    generateDocument
+);
+
+app.get(
+    '/conversation/:id',
+    (
+        req,
+        res
+    ) => {
+        const id =
+            cleanText(
+                req.params.id,
+                200
+            );
+
+        const conversation =
+            getConversation(id);
+
+        return res.json({
+            success: true,
+
+            conversationId:
+                conversation.id,
+
+            title:
+                conversation.title,
+
+            messages:
+                conversation.messages,
+
+            context:
+                buildContextSummary(
+                    conversation
+                )
+        });
+    }
+);
+
+app.put(
+    '/conversation',
+    updateConversation
+);
+
+app.post(
+    '/conversation/clear',
+    clearConversation
+);
+
+app.delete(
+    '/conversation/:id',
+    deleteConversation
+);
+
+/* =========================================================
+   404
+========================================================= */
+
+app.use(
+    (
+        req,
+        res
+    ) => {
+        return res.status(404).json({
+            success: false,
+
+            error:
+                'Endpoint not found.',
+
+            path:
+                req.originalUrl
+        });
+    }
+);
+
+/* =========================================================
+   SERVER START
+========================================================= */
+
+const server =
+    app.listen(
+        PORT,
+        '0.0.0.0',
+        () => {
+            console.log('');
+            console.log(
+                '========================================'
+            );
+            console.log(
+                '          MECHSYNTRA AI BACKEND'
+            );
+            console.log(
+                '========================================'
+            );
+
+            console.log(
+                `Local      : http://localhost:${PORT}`
+            );
+
+            console.log(
+                `Health     : http://localhost:${PORT}/health`
+            );
+
+            console.log(
+                `Chat       : http://localhost:${PORT}/chat`
+            );
+
+            console.log(
+                `Copilot    : http://localhost:${PORT}/project-copilot`
+            );
+
+            console.log(
+                `Presentation: http://localhost:${PORT}/generate-presentation`
+            );
+
+            console.log(
+                `Documents  : http://localhost:${PORT}/generate-document`
+            );
+
+            console.log(
+                `Assignment : http://localhost:${PORT}/generate-assignment`
+            );
+
+            console.log(
+                `Primary    : ${PRIMARY_MODEL}`
+            );
+
+            console.log(
+                `Backup     : ${BACKUP_MODEL}`
+            );
+
+            console.log(
+                'Media      : IMAGE / AUDIO / PDF / TEXT'
+            );
+
+            console.log(
+                'Documents  : WORD / PDF'
+            );
+
+            console.log(
+                `Gemini Key : ${
+                    GEMINI_API_KEY
+                        ? 'CONFIGURED'
+                        : 'MISSING'
+                }`
+            );
+
+            console.log(
+                'Context    : ENABLED'
+            );
+
+            console.log(
+                'Copilot    : ENABLED'
+            );
+
+            console.log(
+                'Status     : ONLINE'
+            );
+
+            console.log(
+                '========================================'
+            );
+
+            console.log('');
+        }
+    );
+
+/* =========================================================
+   PROCESS ERROR HANDLING
+========================================================= */
+
+process.on(
+    'unhandledRejection',
+    error => {
+        console.error(
+            '[UNHANDLED REJECTION]',
+            error
+        );
+    }
+);
+
+process.on(
+    'uncaughtException',
+    error => {
+        console.error(
+            '[UNCAUGHT EXCEPTION]',
+            error
+        );
     }
 );
 
@@ -2677,206 +2641,53 @@ app.use(
    GRACEFUL SHUTDOWN
 ========================================================= */
 
-const server =
-    app.listen(
-        PORT,
-        HOST,
+function shutdown(
+    signal
+) {
+    console.log(
+        `${signal} received. Shutting down...`
+    );
+
+    server.close(
         () => {
-
-            console.log("");
             console.log(
-                "╔══════════════════════════════════════════════╗"
-            );
-            console.log(
-                "║              MECHSYNTRA AI                  ║"
-            );
-            console.log(
-                "║        NEXT-GENERATION BACKEND              ║"
-            );
-            console.log(
-                "╚══════════════════════════════════════════════╝"
+                'MechSyntra backend stopped.'
             );
 
-            console.log(
-                `Environment : ${NODE_ENV}`
-            );
-
-            console.log(
-                `Version     : ${APP_VERSION}`
-            );
-
-            console.log(
-                `Server      : http://localhost:${PORT}`
-            );
-
-            console.log(
-                `Health      : http://localhost:${PORT}/health`
-            );
-
-            console.log(
-                `Ready       : http://localhost:${PORT}/ready`
-            );
-
-            console.log(
-                `Chat        : /api/v1/chat`
-            );
-
-            console.log(
-                `Assignment  : /api/v1/generate-assignment`
-            );
-
-            console.log(
-                `Documents   : /api/v1/generate-document`
-            );
-
-            console.log(
-                `Presentation: /api/v1/generate-presentation`
-            );
-
-            console.log(
-                `Image Edit  : /api/v1/edit-image`
-            );
-
-            console.log(
-                `Primary AI  : ${PRIMARY_MODEL}`
-            );
-
-            console.log(
-                `Fallback AI : ${FALLBACK_MODEL}`
-            );
-
-            console.log(
-                `Image AI    : ${IMAGE_MODEL}`
-            );
-
-            console.log(
-                "Status      : ONLINE"
-            );
-
-            console.log(
-                "══════════════════════════════════════════════"
-            );
-            console.log("");
+            process.exit(0);
         }
     );
 
+    setTimeout(
+        () => {
+            console.error(
+                'Forced shutdown.'
+            );
+
+            process.exit(1);
+        },
+        10000
+    ).unref();
+}
+
+process.on(
+    'SIGINT',
+    () => shutdown('SIGINT')
+);
+
+process.on(
+    'SIGTERM',
+    () => shutdown('SIGTERM')
+);
+
 /* =========================================================
-   PROCESS SAFETY
+   EXPORT
 ========================================================= */
 
-process.on(
-    "SIGTERM",
-    () => {
+module.exports = {
+    app,
 
-        console.log(
-            "[SYSTEM] SIGTERM received. Shutting down..."
-        );
-<<<<<<< HEAD
+    server,
 
-        server.close(() => {
-
-            console.log(
-                "[SYSTEM] Server closed."
-            );
-
-            process.exit(0);
-        });
-=======
-        console.log(
-            "          MECHSYNTRA AI BACKEND"
-        );
-        console.log(
-            "========================================"
-        );
-
-        console.log(
-            `Local      : http://localhost:${PORT}`
-        );
-
-        console.log(
-            `Health     : http://localhost:${PORT}/health`
-        );
-
-        console.log(
-            `Chat       : http://localhost:${PORT}/chat`
-        );
-
-        console.log(
-            `Documents  : http://localhost:${PORT}/generate-document`
-        );
-
-        console.log(
-            `Assignment : http://localhost:${PORT}/generate-assignment`
-        );
-
-        console.log(
-            `Primary    : ${PRIMARY_MODEL}`
-        );
-
-        console.log(
-            `Backup     : ${FALLBACK_MODEL}`
-        );
-
-        console.log(
-            "Media      : IMAGE / AUDIO / PDF / TEXT"
-        );
-
-        console.log(
-            "Documents  : WORD / PDF"
-        );
-
-        console.log(
-            "Status     : ONLINE"
-        );
-
-        console.log(
-            "========================================"
-        );
-
-        console.log("");
->>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
-    }
-);
-
-process.on(
-    "SIGINT",
-    () => {
-
-        console.log(
-            "[SYSTEM] SIGINT received. Shutting down..."
-        );
-
-        server.close(() => {
-
-            console.log(
-                "[SYSTEM] Server closed."
-            );
-
-            process.exit(0);
-        });
-    }
-);
-
-process.on(
-    "unhandledRejection",
-    error => {
-
-        console.error(
-            "[FATAL] Unhandled promise rejection:",
-            error
-        );
-    }
-);
-
-process.on(
-    "uncaughtException",
-    error => {
-
-        console.error(
-            "[FATAL] Uncaught exception:",
-            error
-        );
-
-        process.exit(1);
-    }
-);
+    conversations
+};
