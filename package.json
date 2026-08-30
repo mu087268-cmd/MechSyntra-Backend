@@ -1,74 +1,28 @@
 {
-  "name": "mechsyntra-ai-backend",
+  "name": "mechsyntra-backend",
   "version": "1.0.0",
-  "description": "Next-generation AI backend infrastructure powering MechSyntra — an intelligent engineering assistant platform.",
+  "description": "MechSyntra AI backend",
   "main": "server.js",
-  "type": "commonjs",
-  "private": true,
-
-  "author": {
-    "name": "Usman Choudhary",
-    "organization": "MechSyntra"
-  },
-
-  "license": "ISC",
-
-  "engines": {
-    "node": ">=20.9.0",
-    "npm": ">=10.0.0"
-  },
-
   "scripts": {
     "start": "node server.js",
-    "dev": "node --watch server.js",
-    "check": "node --check server.js",
-    "health": "node -e \"console.log('MechSyntra AI Backend — HEALTHY')\"",
-    "audit": "npm audit",
-    "audit:fix": "npm audit fix",
-    "outdated": "npm outdated",
-    "ci": "npm ci"
+    "check": "node --check server.js"
   },
-
-  "keywords": [
-    "mechsyntra",
-    "mechsyntra-ai",
-    "engineering-ai",
-    "mechanical-engineering",
-    "ai-assistant",
-    "ai-chatbot",
-    "generative-ai",
-    "engineering-assistant",
-    "mechanical-design",
-    "machine-design",
-    "manufacturing",
-    "thermodynamics",
-    "fluid-mechanics",
-    "engineering-calculations",
-    "engineering-projects",
-    "research-assistant",
-    "openai",
-    "gemini",
-    "nodejs",
-    "express"
-  ],
-
+  "keywords": [],
+  "author": "Usman Choudhary",
+  "license": "ISC",
+  "type": "commonjs",
+  "engines": {
+    "node": ">=20.9.0"
+  },
   "dependencies": {
     "@google/genai": "^2.19.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
-    "docx": "^9.5.1",
     "express": "^5.2.1",
     "openai": "^7.7.0",
+    "sharp": "^0.35.4",
+    "docx": "^9.5.1",
     "pdfkit": "^0.17.2",
-    "pptxgenjs": "^3.12.0",
-    "sharp": "^0.35.4"
-  },
-
-  "devDependencies": {
-    "nodemon": "^3.1.10"
-  },
-
-  "publishConfig": {
-    "access": "restricted"
+    "pptxgenjs": "^3.12.0"
   }
 }
