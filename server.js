@@ -17,7 +17,11 @@ dotenv.config();
 const app = express();
 
 const PORT = Number(process.env.PORT) || 3000;
+<<<<<<< HEAD
 const HOST = process.env.HOST || "0.0.0.0";
+=======
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
 const NODE_ENV =
     process.env.NODE_ENV || "development";
@@ -59,10 +63,20 @@ const GENERATED_DIR =
 ========================================================= */
 
 if (!GEMINI_API_KEY) {
+<<<<<<< HEAD
     console.error(
         "[FATAL] GEMINI_API_KEY is missing."
     );
 
+=======
+    console.error("");
+    console.error("========================================");
+    console.error("       MECHSYNTRA AI BACKEND ERROR");
+    console.error("========================================");
+    console.error("GEMINI_API_KEY is missing.");
+    console.error("Check your .env file.");
+    console.error("========================================");
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
     process.exit(1);
 }
 
@@ -82,7 +96,11 @@ const ai = new GoogleGenAI({
 });
 
 /* =========================================================
+<<<<<<< HEAD
    SECURITY
+=======
+   EXPRESS
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 ========================================================= */
 
 const allowedOrigins =
@@ -331,6 +349,7 @@ You are a professional general-purpose AI assistant
 with strong capabilities in engineering, education,
 research, programming, documents and productivity.
 
+<<<<<<< HEAD
 CONVERSATION MEMORY:
 
 Treat the supplied history as the same continuous conversation.
@@ -425,6 +444,46 @@ CHAT:
 Respond naturally and directly.
 
 Do not output JSON unless the endpoint specifically requires it.
+=======
+LANGUAGE:
+- Reply normally in the user's language.
+- Support English, Urdu and Roman Urdu.
+- If the user explicitly requests a language, follow it.
+- If the user says Roman Urdu, use Roman Urdu.
+- Do not unnecessarily switch languages.
+
+GENERAL:
+- Give accurate and useful answers.
+- Do not invent facts.
+- Do not claim an action was completed unless it was actually completed.
+- Keep simple questions concise.
+- Give detailed answers when required.
+
+MEDIA:
+- Analyze supplied images, PDFs, audio and text when supported.
+- Never pretend that an attachment was inspected if it was not supplied.
+- Never invent information from attachments.
+
+ASSIGNMENTS:
+- Create complete academic assignments when requested.
+- Include a suitable title.
+- Include Introduction.
+- Include relevant sections and subtopics.
+- Include examples where useful.
+- Include Conclusion.
+- Include References only when reliable references are available.
+- Never fabricate citations, studies or statistics.
+- Follow the requested language and educational level.
+
+DOCUMENTS:
+- Word/DOCX and PDF generation is supported by the backend.
+- The backend generates the actual files.
+
+RESPONSE:
+- Use clean readable text.
+- Do not use unnecessary Markdown.
+- Do not return JSON as the normal AI answer.
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 `;
 
 /* =========================================================
@@ -533,6 +592,45 @@ function isSupportedMediaMime(
     ].includes(mimeType);
 }
 
+<<<<<<< HEAD
+=======
+function stripDataUrlPrefix(base64) {
+    if (typeof base64 !== "string") {
+        return "";
+    }
+
+    const commaIndex = base64.indexOf(",");
+
+    if (
+        base64.startsWith("data:") &&
+        commaIndex >= 0
+    ) {
+        return base64
+            .slice(commaIndex + 1)
+            .trim();
+    }
+
+    return base64.trim();
+}
+
+function looksLikeBase64(value) {
+    if (typeof value !== "string") {
+        return false;
+    }
+
+    const clean = stripDataUrlPrefix(value);
+
+    if (
+        !clean ||
+        clean.length > MAX_MEDIA_BASE64_LENGTH
+    ) {
+        return false;
+    }
+
+    return /^[A-Za-z0-9+/=\s]+$/.test(clean);
+}
+
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 function createInlineDataPart(
     mimeType,
     base64
@@ -541,10 +639,14 @@ function createInlineDataPart(
     return {
         inlineData: {
             mimeType,
+<<<<<<< HEAD
             data:
                 stripDataUrlPrefix(
                     base64
                 )
+=======
+            data: stripDataUrlPrefix(base64Data)
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         }
     };
 }
@@ -676,11 +778,44 @@ function getMediaFromBody(
         return null;
     }
 
+<<<<<<< HEAD
     const mimeType =
         normalizeMimeType(
             body?.mimeType ||
             body?.mediaMimeType ||
             "image/jpeg"
+=======
+    if (mediaBase64) {
+        if (!mimeType) {
+            throw new Error(
+                "MIME type is required when a file is attached."
+            );
+        }
+
+        if (!isSupportedMediaMime(mimeType)) {
+            throw new Error(
+                `Unsupported media type: ${mimeType}`
+            );
+        }
+
+        if (!looksLikeBase64(mediaBase64)) {
+            throw new Error(
+                "Invalid or oversized base64 media data."
+            );
+        }
+
+        if (fileName) {
+            parts.push({
+                text: `Attached file name: ${fileName}`
+            });
+        }
+
+        parts.push(
+            createInlineDataPart(
+                mimeType,
+                mediaBase64
+            )
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         );
 
     if (
@@ -711,6 +846,7 @@ function getMediaFromBody(
     };
 }
 
+<<<<<<< HEAD
 /* =========================================================
    ERROR HANDLING
 ========================================================= */
@@ -720,16 +856,27 @@ function getErrorStatus(
 ) {
 
     const value =
+=======
+function getErrorStatus(error) {
+    const status =
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         error?.status ??
         error?.code ??
         error?.response?.status ??
         500;
 
+<<<<<<< HEAD
     const status =
         Number(value);
 
     return Number.isFinite(status)
         ? status
+=======
+    const numberStatus = Number(status);
+
+    return Number.isFinite(numberStatus)
+        ? numberStatus
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         : 500;
 }
 
@@ -747,6 +894,7 @@ function getFriendlyError(
 
     switch (status) {
 
+<<<<<<< HEAD
         case 400:
             return "The request was invalid. Please check your message or media.";
 
@@ -774,6 +922,42 @@ function getFriendlyError(
         default:
             return "MechSyntra AI could not complete the request.";
     }
+=======
+    if (status === 400) {
+        return "Gemini rejected the request. Please check the request.";
+    }
+
+    if (status === 401) {
+        return "Gemini API authentication failed. Check GEMINI_API_KEY.";
+    }
+
+    if (status === 403) {
+        return "Gemini API access was denied. Check your Google AI project permissions.";
+    }
+
+    if (status === 404) {
+        return "The configured Gemini model is unavailable.";
+    }
+
+    if (status === 413) {
+        return "The attached file is too large.";
+    }
+
+    if (status === 429) {
+        return "Gemini is rate-limited. Please try again shortly.";
+    }
+
+    if (
+        status === 500 ||
+        status === 502 ||
+        status === 503 ||
+        status === 504
+    ) {
+        return "Gemini is temporarily unavailable.";
+    }
+
+    return "MechSyntra AI could not generate a response.";
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 }
 
 function sendError(
@@ -826,13 +1010,18 @@ function cleanResponse(
 }
 
 /* =========================================================
+<<<<<<< HEAD
    GEMINI
+=======
+   GEMINI REQUEST
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 ========================================================= */
 
 async function generateWithModel(
     model,
     contents
 ) {
+<<<<<<< HEAD
 
     return ai.models.generateContent({
 
@@ -840,6 +1029,11 @@ async function generateWithModel(
 
         contents,
 
+=======
+    return await ai.models.generateContent({
+        model,
+        contents,
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         config: {
 
             systemInstruction:
@@ -947,6 +1141,7 @@ async function generateAI(
 ========================================================= */
 
 app.get("/", (req, res) => {
+<<<<<<< HEAD
 
     res.json({
 
@@ -983,6 +1178,16 @@ app.get("/", (req, res) => {
             imageEditing: true
 
         }
+=======
+    res.json({
+        success: true,
+        service: "MechSyntra AI",
+        status: "online",
+        model: PRIMARY_MODEL,
+        multimodal: true,
+        documents: true,
+        assignment: true
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
     });
 });
 
@@ -990,6 +1195,7 @@ app.get("/", (req, res) => {
    HEALTH
 ========================================================= */
 
+<<<<<<< HEAD
 app.get(
     "/health",
     (req, res) => {
@@ -1019,6 +1225,18 @@ app.get(
         });
     }
 );
+=======
+app.get("/health", (req, res) => {
+    res.json({
+        success: true,
+        status: "healthy",
+        model: PRIMARY_MODEL,
+        multimodal: true,
+        documents: true,
+        assignment: true
+    });
+});
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
 /* =========================================================
    READINESS
@@ -1362,6 +1580,7 @@ app.post(
 
         try {
 
+<<<<<<< HEAD
             if (!documentGenerator) {
 
                 return sendError(
@@ -1524,6 +1743,8 @@ app.post(
 
         try {
 
+=======
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
             const {
                 topic,
                 language = "English",
@@ -1554,6 +1775,25 @@ app.post(
                     50
                 );
 
+<<<<<<< HEAD
+=======
+            const requestedFormat =
+                String(format || "both")
+                    .toLowerCase()
+                    .trim();
+
+            if (
+                !["word", "pdf", "both"]
+                    .includes(requestedFormat)
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        "Format must be word, pdf or both."
+                });
+            }
+
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
             const prompt = `
 Create a complete academic assignment.
 
@@ -1561,11 +1801,16 @@ Topic:
 ${topic.trim()}
 
 Language:
+<<<<<<< HEAD
 ${language}
+=======
+${requestedLanguage}
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
 Target length:
 Approximately ${requestedPages} pages.
 
+<<<<<<< HEAD
 Include:
 
 - Title
@@ -1586,10 +1831,46 @@ Return assignment content only.
                     buildConversationContents(
                         prompt
                     )
+=======
+Requirements:
+- Write entirely in the requested language.
+- If Roman Urdu is requested, use Roman Urdu.
+- Include a clear title.
+- Include Introduction.
+- Include relevant sections and subtopics.
+- Explain the topic properly.
+- Include examples where useful.
+- Include Conclusion.
+- Include References only if reliable references can be provided.
+- Never invent citations or references.
+- Do not mention that you are an AI.
+- Return only the assignment content.
+`;
+
+            const contents = [
+                {
+                    role: "user",
+                    parts: [
+                        {
+                            text: prompt
+                        }
+                    ]
+                }
+            ];
+
+            let response = null;
+            let lastError = null;
+
+            try {
+                console.log(
+                    "Assignment primary:",
+                    PRIMARY_MODEL
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
                 );
 
             if (!documentGenerator) {
 
+<<<<<<< HEAD
                 return sendError(
                     res,
                     req,
@@ -1599,16 +1880,117 @@ Return assignment content only.
             }
 
             const files = [];
+=======
+            } catch (error) {
+
+                lastError = error;
+
+                console.error(
+                    "Assignment primary error:",
+                    error?.message
+                );
+            }
+
+            if (!response) {
+
+                try {
+
+                    console.log(
+                        "Assignment fallback:",
+                        FALLBACK_MODEL
+                    );
+
+                    response =
+                        await generateWithModel(
+                            FALLBACK_MODEL,
+                            contents
+                        );
+
+                } catch (error) {
+
+                    lastError = error;
+
+                    console.error(
+                        "Assignment fallback error:",
+                        error?.message
+                    );
+                }
+            }
+
+            if (!response) {
+                return res.status(502).json({
+                    success: false,
+                    error:
+                        getFriendlyError(
+                            lastError
+                        ),
+                    status:
+                        getErrorStatus(
+                            lastError
+                        )
+                });
+            }
+
+            let assignmentContent = "";
+
+            try {
+                assignmentContent =
+                    typeof response.text === "string"
+                        ? response.text.trim()
+                        : "";
+            } catch (error) {
+                console.error(
+                    "Assignment text extraction error:",
+                    error?.message
+                );
+            }
+
+            assignmentContent =
+                cleanResponse(
+                    assignmentContent
+                );
+
+            if (!assignmentContent) {
+                return res.status(502).json({
+                    success: false,
+                    error:
+                        "Gemini returned empty assignment content."
+                });
+            }
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
             const cleanTitle =
-                topic
-                    .trim()
-                    .slice(0, 120);
+                topic.trim().slice(0, 120);
 
+<<<<<<< HEAD
+=======
+            const generatedFiles = [];
+
+            /* WORD */
+
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
             if (
-                format === "word" ||
-                format === "both"
+                requestedFormat === "word" ||
+                requestedFormat === "both"
             ) {
+<<<<<<< HEAD
+=======
+
+                console.log(
+                    "Creating Word document..."
+                );
+
+                const word =
+                    await createWordDocument({
+                        title:
+                            cleanTitle,
+                        content:
+                            assignmentContent,
+                        fileName:
+                            fileName ||
+                            cleanTitle
+                    });
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
                 const word =
                     await documentGenerator
@@ -1637,12 +2019,37 @@ Return assignment content only.
                     mimeType:
                         word.mimeType
                 });
+
+                console.log(
+                    "Word created:",
+                    word.filePath
+                );
             }
 
+            /* PDF */
+
             if (
-                format === "pdf" ||
-                format === "both"
+                requestedFormat === "pdf" ||
+                requestedFormat === "both"
             ) {
+<<<<<<< HEAD
+=======
+
+                console.log(
+                    "Creating PDF document..."
+                );
+
+                const pdf =
+                    await createPdfDocument({
+                        title:
+                            cleanTitle,
+                        content:
+                            assignmentContent,
+                        fileName:
+                            fileName ||
+                            cleanTitle
+                    });
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
                 const pdf =
                     await documentGenerator
@@ -1671,8 +2078,16 @@ Return assignment content only.
                     mimeType:
                         pdf.mimeType
                 });
+
+<<<<<<< HEAD
+=======
+                console.log(
+                    "PDF created:",
+                    pdf.filePath
+                );
             }
 
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
             return res.status(200).json({
 
                 success: true,
@@ -1685,17 +2100,166 @@ Return assignment content only.
 
                 language,
 
+<<<<<<< HEAD
+=======
+            console.error("");
+            console.error(
+                "========================================"
+            );
+            console.error(
+                "GENERATE ASSIGNMENT ERROR"
+            );
+            console.error(
+                error
+            );
+            console.error(
+                "========================================"
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error?.message ||
+                    "Could not generate the assignment."
+            });
+        }
+    }
+);
+
+/* =========================================================
+   GENERATE DOCUMENT
+========================================================= */
+
+app.post(
+    "/generate-document",
+    async (req, res) => {
+
+        try {
+
+            const {
+                title,
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
                 content,
 
                 files,
 
+<<<<<<< HEAD
                 requestId:
                     req.requestId
+=======
+            const requestedFormat =
+                String(format || "both")
+                    .toLowerCase()
+                    .trim();
+
+            if (
+                !["word", "pdf", "both"]
+                    .includes(requestedFormat)
+            ) {
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        "Format must be word, pdf or both."
+                });
+            }
+
+            const cleanTitle =
+                typeof title === "string" &&
+                title.trim()
+                    ? title.trim()
+                    : "MechSyntra Assignment";
+
+            const results = [];
+
+            /* WORD */
+
+            if (
+                requestedFormat === "word" ||
+                requestedFormat === "both"
+            ) {
+
+                console.log(
+                    "Creating Word document..."
+                );
+
+                const word =
+                    await createWordDocument({
+                        title:
+                            cleanTitle,
+                        content:
+                            content,
+                        fileName:
+                            fileName ||
+                            cleanTitle
+                    });
+
+                results.push({
+                    type: "word",
+                    fileName:
+                        word.fileName,
+                    url:
+                        `/generated/${word.fileName}`,
+                    mimeType:
+                        word.mimeType
+                });
+
+                console.log(
+                    "Word created:",
+                    word.filePath
+                );
+            }
+
+            /* PDF */
+
+            if (
+                requestedFormat === "pdf" ||
+                requestedFormat === "both"
+            ) {
+
+                console.log(
+                    "Creating PDF document..."
+                );
+
+                const pdf =
+                    await createPdfDocument({
+                        title:
+                            cleanTitle,
+                        content:
+                            content,
+                        fileName:
+                            fileName ||
+                            cleanTitle
+                    });
+
+                results.push({
+                    type: "pdf",
+                    fileName:
+                        pdf.fileName,
+                    url:
+                        `/generated/${pdf.fileName}`,
+                    mimeType:
+                        pdf.mimeType
+                });
+
+                console.log(
+                    "PDF created:",
+                    pdf.filePath
+                );
+            }
+
+            return res.status(200).json({
+                success: true,
+                message:
+                    "Document generated successfully.",
+                files:
+                    results
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
             });
 
         } catch (error) {
 
             console.error(
+<<<<<<< HEAD
                 "[ASSIGNMENT ERROR]",
                 error
             );
@@ -1707,6 +2271,18 @@ Return assignment content only.
                 error?.message ||
                 "Could not generate the assignment."
             );
+=======
+                "DOCUMENT GENERATION ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error?.message ||
+                    "Could not generate the requested document."
+            });
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         }
     }
 );
@@ -1724,6 +2300,7 @@ app.post(
 
         try {
 
+<<<<<<< HEAD
             const prompt =
                 typeof req.body?.prompt === "string"
                     ? req.body.prompt.trim()
@@ -1752,6 +2329,102 @@ app.post(
                     400,
                     "An image is required."
                 );
+=======
+            const message =
+                typeof req.body?.message === "string"
+                    ? req.body.message.trim()
+                    : "";
+
+            const mediaBase64 =
+                typeof req.body?.mediaBase64 === "string"
+                    ? req.body.mediaBase64
+                    : "";
+
+            if (
+                message.length > 20000
+            ) {
+                return res.status(413).json({
+                    success: false,
+                    error:
+                        "Message is too long."
+                });
+            }
+
+            if (
+                mediaBase64 &&
+                mediaBase64.length >
+                    MAX_MEDIA_BASE64_LENGTH
+            ) {
+                return res.status(413).json({
+                    success: false,
+                    error:
+                        "Attached media is too large."
+                });
+            }
+
+            let parts;
+
+            try {
+                parts =
+                    buildUserParts(
+                        req.body
+                    );
+            } catch (error) {
+                return res.status(400).json({
+                    success: false,
+                    error:
+                        error.message
+                });
+            }
+
+            const contents = [
+                {
+                    role: "user",
+                    parts
+                }
+            ];
+
+            let response = null;
+            let lastError = null;
+
+            try {
+
+                response =
+                    await generateWithModel(
+                        PRIMARY_MODEL,
+                        contents
+                    );
+
+            } catch (error) {
+
+                lastError = error;
+
+                console.error(
+                    "Chat primary error:",
+                    error?.message
+                );
+            }
+
+            if (!response) {
+
+                try {
+
+                    response =
+                        await generateWithModel(
+                            FALLBACK_MODEL,
+                            contents
+                        );
+
+                } catch (error) {
+
+                    lastError = error;
+
+                    console.error(
+                        "Chat fallback error:",
+                        error?.message
+                    );
+                }
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
             }
 
             if (
@@ -1794,6 +2467,7 @@ app.post(
                     ]
                 });
 
+<<<<<<< HEAD
             const parts =
                 response
                     ?.candidates?.[0]
@@ -1834,6 +2508,12 @@ app.post(
                     "The AI model did not return an edited image."
                 );
             }
+=======
+            let answer =
+                typeof response.text === "string"
+                    ? response.text.trim()
+                    : "";
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 
             const extension =
                 imagePart.mimeType ===
@@ -1883,6 +2563,7 @@ app.post(
         } catch (error) {
 
             console.error(
+<<<<<<< HEAD
                 "[IMAGE ERROR]",
                 error
             );
@@ -1895,12 +2576,44 @@ app.post(
                     error
                 )
             );
+=======
+                "CHAT ERROR:",
+                error
+            );
+
+            return res.status(500).json({
+                success: false,
+                error:
+                    error?.message ||
+                    "MechSyntra AI server could not process the request."
+            });
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
         }
     }
 );
 
 /* =========================================================
+<<<<<<< HEAD
    404
+=======
+   METHOD NOT ALLOWED
+========================================================= */
+
+app.use(
+    "/chat",
+    (req, res) => {
+
+        return res.status(405).json({
+            success: false,
+            error:
+                "Use POST /chat for AI messages."
+        });
+    }
+);
+
+/* =========================================================
+   UNKNOWN ROUTE
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 ========================================================= */
 
 app.use(
@@ -1923,7 +2636,11 @@ app.use(
 );
 
 /* =========================================================
+<<<<<<< HEAD
    GLOBAL ERROR HANDLER
+=======
+   START SERVER
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
 ========================================================= */
 
 app.use(
@@ -2054,6 +2771,7 @@ process.on(
         console.log(
             "[SYSTEM] SIGTERM received. Shutting down..."
         );
+<<<<<<< HEAD
 
         server.close(() => {
 
@@ -2063,6 +2781,60 @@ process.on(
 
             process.exit(0);
         });
+=======
+        console.log(
+            "          MECHSYNTRA AI BACKEND"
+        );
+        console.log(
+            "========================================"
+        );
+
+        console.log(
+            `Local      : http://localhost:${PORT}`
+        );
+
+        console.log(
+            `Health     : http://localhost:${PORT}/health`
+        );
+
+        console.log(
+            `Chat       : http://localhost:${PORT}/chat`
+        );
+
+        console.log(
+            `Documents  : http://localhost:${PORT}/generate-document`
+        );
+
+        console.log(
+            `Assignment : http://localhost:${PORT}/generate-assignment`
+        );
+
+        console.log(
+            `Primary    : ${PRIMARY_MODEL}`
+        );
+
+        console.log(
+            `Backup     : ${FALLBACK_MODEL}`
+        );
+
+        console.log(
+            "Media      : IMAGE / AUDIO / PDF / TEXT"
+        );
+
+        console.log(
+            "Documents  : WORD / PDF"
+        );
+
+        console.log(
+            "Status     : ONLINE"
+        );
+
+        console.log(
+            "========================================"
+        );
+
+        console.log("");
+>>>>>>> 0ebed39 (feat(platform): establish production-grade MechSyntra AI infrastructure)
     }
 );
 
