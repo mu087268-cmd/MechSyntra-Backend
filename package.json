@@ -1,13 +1,19 @@
 {
   "name": "mechsyntra-backend",
-  "version": "1.0.0",
-  "description": "MechSyntra AI backend",
+  "version": "2.0.0",
+  "description": "Premium production-oriented MechSyntra AI backend",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
     "check": "node --check server.js"
   },
-  "keywords": [],
+  "keywords": [
+    "mechsyntra",
+    "ai",
+    "gemini",
+    "express",
+    "mechanical-engineering"
+  ],
   "author": "Usman Choudhary",
   "license": "ISC",
   "type": "commonjs",
@@ -18,10 +24,10 @@
     "@google/genai": "^2.19.0",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
+    "docx": "^9.5.1",
     "express": "^5.2.1",
     "openai": "^7.7.0",
     "sharp": "^0.35.4",
-    "docx": "^9.5.1",
     "pdfkit": "^0.17.2",
     "pptxgenjs": "^3.12.0"
   }
